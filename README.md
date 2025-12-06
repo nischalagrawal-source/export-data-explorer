@@ -2,25 +2,38 @@
 
 A comprehensive Indian Export Data Analysis System for tracking competitors, clients, and market trends from Indian sea and air port export data.
 
-![EDE Dashboard](https://img.shields.io/badge/Platform-Web%20%7C%20Desktop%20%7C%20Mobile-blue)
+![Platform](https://img.shields.io/badge/Platform-Web-blue)
+![Node](https://img.shields.io/badge/Node.js-18+-green)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
-## Features
+## 🌐 Live Demo
+
+**Access the app:** [Your Railway URL here]
+
+> Replace with your deployed URL after Railway deployment
+
+---
+
+## ✨ Features
 
 ### 📊 Data Import
 - **Excel Upload**: Import monthly export data in Excel format (.xlsx, .xls)
 - **Dual Categories**: Separate handling for Fruits and Vegetables data
-- **Smart Parsing**: Flexible column mapping to handle various Excel formats
-- **Duplicate Detection**: Uses Declaration ID to prevent duplicate entries
+- **Smart Column Detection**: Flexible column mapping to handle various Indian export data formats
+- **Duplicate Detection**: Uses Declaration ID + Date + Product combination for uniqueness
+- **Bulk Processing**: Handles large files (50,000+ records) efficiently
 
 ### 🎯 Competitor Tracking
 - Add/remove competitors dynamically
-- Track competitor shipments, FOB values, products, and destinations
+- **Fuzzy Search**: Find competitors with partial name matching
+- Track shipments, FOB values, products, and destinations
 - Month-over-month comparison with percentage changes
 - Visual charts for competitor performance
+- **Detailed Analysis**: Click any competitor for in-depth breakdown
 
 ### 👥 Client Monitoring
 - Track client (consignee) purchasing patterns
+- **Smart Name Handling**: "TO ORDER" and similar placeholders shown as "Name Not Available"
 - Monitor which suppliers they're buying from
 - Analyze product diversity and volume trends
 - Historical comparison reports
@@ -33,45 +46,67 @@ A comprehensive Indian Export Data Analysis System for tracking competitors, cli
 
 ### 📈 Analytics Dashboard
 - **Total Shipments**: Count based on unique Declaration IDs
-- **FOB Values**: Total and segmented export values
+- **FOB Values**: Displayed in both USD and INR (₹)
 - **Geographic Analysis**: Top destination countries
 - **Category Breakdown**: Fruits vs Vegetables split
 - **Trend Analysis**: Monthly patterns and growth
 
-### 📑 Reports
+### 🧠 Intelligence Tab
+- **Prospective Clients**: Find potential buyers purchasing similar products from competitors
+- **Cross-Sell Analysis**: Identify products your existing clients buy from competitors
+
+### 📑 Reports & Export
 - Interactive charts (Bar, Pie, Line, Area)
-- Exportable data tables
+- **PDF Export**: Download detailed competitor/client analysis as PDF
+- **Excel Export**: Export data tables
 - Month-over-month comparisons
 - Customizable date ranges
 
-## Tech Stack
+### 💬 Feedback System
+- Built-in feedback button for users to report bugs, suggestions, or questions
+- All feedback saved with timestamp and page context
 
-- **Frontend**: React 18, Vite, TailwindCSS, Recharts
-- **Backend**: Node.js, Express
-- **Database**: SQLite (easily upgradable to PostgreSQL)
-- **File Processing**: xlsx library
+---
 
-## Installation
+## 🛠️ Tech Stack
 
-### Prerequisites
-- Node.js 18+ 
-- npm or yarn
+| Layer | Technology |
+|-------|------------|
+| **Frontend** | React 18, Vite, TailwindCSS, Chart.js |
+| **Backend** | Node.js, Express |
+| **Database** | SQLite (sql.js - pure JavaScript) |
+| **File Processing** | xlsx library |
+| **PDF Generation** | html2canvas, jspdf |
 
-### Setup
+---
 
-1. **Clone the repository**
+## 🚀 Deployment
+
+### Deploy to Railway (Recommended)
+
+1. **Fork/Clone this repository to your GitHub**
+
+2. **Go to [Railway.app](https://railway.app)**
+   - Sign in with GitHub
+   - Click "New Project" → "Deploy from GitHub repo"
+   - Select `export-data-explorer`
+   - Click "Deploy Now"
+
+3. **Generate Public URL**
+   - Go to Settings → Networking → Generate Domain
+   - Share the URL with your team!
+
+### Local Development
+
 ```bash
-git clone <repository-url>
-cd EDE
-```
+# Clone the repository
+git clone https://github.com/nischalagrawal-source/export-data-explorer.git
+cd export-data-explorer
 
-2. **Install dependencies**
-```bash
+# Install all dependencies
 npm run install:all
-```
 
-3. **Start development servers**
-```bash
+# Start development servers
 npm run dev
 ```
 
@@ -79,119 +114,159 @@ This will start:
 - Backend API server on `http://localhost:3001`
 - Frontend dev server on `http://localhost:5173`
 
-## Excel Data Format
+### Production Build
 
-The system expects Excel files with the following columns (flexible naming):
+```bash
+# Build frontend
+npm run build
 
-| Column | Alternative Names | Description |
-|--------|------------------|-------------|
-| Declaration ID | Dec ID, DECLARATION_ID | Unique shipment identifier |
-| Exporter Name | EXPORTER_NAME, Exporter | Company exporting goods |
-| Consignee Name | CONSIGNEE_NAME, Buyer | Receiving party |
-| Product Description | Product, Item | Product details |
-| HS Code | HSCode | Harmonized System code |
+# Start production server
+npm start
+```
+
+---
+
+## 📋 Excel Data Format
+
+The system accepts Indian export data Excel files with flexible column naming:
+
+| Column | Accepted Names | Description |
+|--------|---------------|-------------|
+| Declaration ID | SB No, Shipping Bill No, Dec ID | Unique shipment identifier |
+| Exporter Name | Indian Exporter, Exporter | Company exporting goods |
+| Consignee Name | Foreign Buyer, Buyer, Consignee | Receiving party |
+| Product Description | Goods Description, Product, Item | Product details |
+| HS Code | HSCode, HS | Harmonized System code |
 | Quantity | Qty | Amount shipped |
-| Unit | - | Unit of measurement (KGS, etc.) |
-| FOB Value | FOB, Value | Free On Board value |
-| Currency | - | Currency (defaults to USD) |
+| Unit | UQC | Unit of measurement (KGS, etc.) |
+| FOB Value | FOB USD, Fob Usd, Value | Free On Board value in USD |
 | Shipment Date | Date, SB Date | Date of shipment |
 | Port of Loading | Indian Port | Indian port of export |
-| Port of Discharge | Foreign Port | Destination port |
+| Port of Discharge | Foreign Port, Destination Port | Destination port |
 | Country | Destination Country | Destination country |
 
-## Usage Guide
+---
 
-### 1. Configure Your Company
-- Go to **Settings** tab
-- Enter your company name (e.g., "AGNA")
-- This name will be used to highlight your data in reports
+## 📖 Usage Guide
+
+### 1. Import Data
+- Go to **Import Data** tab
+- Select category (Fruits or Vegetables)
+- Upload your Excel file
+- Wait for processing (large files may take 1-2 minutes)
 
 ### 2. Add Competitors
 - Navigate to **Competitors** tab
-- Enter competitor names exactly as they appear in export data
-- Names are case-insensitive and stored in uppercase
+- Type competitor name (partial matching supported)
+- Select from suggestions or add new
+- Click on any competitor for detailed analysis
 
 ### 3. Add Clients
 - Go to **Clients** tab
-- Add consignee/buyer names you want to track
-- Monitor their purchasing patterns
+- Add buyer/consignee names you want to track
+- Click for detailed purchasing analysis
 
-### 4. Import Data
-- Go to **Import Data** tab
-- Select data type (Fruits or Vegetables)
-- Upload Excel file
-- System will parse and store the data
+### 4. View Dashboard
+- **Dashboard** shows overall statistics
+- Use month filter to view specific periods
+- Charts show trends and breakdowns
 
-### 5. Analyze
-- **Dashboard**: Overview of all data
-- **Competitors**: Detailed competitor analysis
-- **Clients**: Client purchase analysis
-- **Company Analysis**: Your company vs competitors
-- **Trends**: Historical patterns
+### 5. Use Intelligence
+- **Prospective Clients**: Find new potential customers
+- **Cross-Sell**: Identify upselling opportunities
 
-## API Endpoints
+### 6. Export Reports
+- Click "Export Report" on any detail view
+- Downloads as PDF with all charts and data
+
+---
+
+## 🔌 API Endpoints
+
+### Data Management
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/upload` | Upload Excel file |
+| GET | `/api/dashboard/summary` | Dashboard statistics |
+| GET | `/api/dashboard/monthly-trend` | Monthly trends |
 
 ### Competitors
-- `GET /api/competitors` - List all competitors
-- `POST /api/competitors` - Add competitor
-- `DELETE /api/competitors/:id` - Remove competitor
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/competitors` | List tracked competitors |
+| POST | `/api/competitors` | Add competitor |
+| DELETE | `/api/competitors/:id` | Remove competitor |
+| GET | `/api/competitors/search?q=` | Search with fuzzy matching |
+| GET | `/api/entity/competitor/:name/details` | Detailed analysis |
 
 ### Clients
-- `GET /api/clients` - List all clients
-- `POST /api/clients` - Add client
-- `DELETE /api/clients/:id` - Remove client
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/clients` | List tracked clients |
+| POST | `/api/clients` | Add client |
+| DELETE | `/api/clients/:id` | Remove client |
+| GET | `/api/clients/search?q=` | Search with fuzzy matching |
+| GET | `/api/entity/client/:name/details` | Detailed analysis |
 
-### Analytics
-- `GET /api/analytics/dashboard` - Dashboard summary
-- `GET /api/analytics/competitors` - Competitor analysis
-- `GET /api/analytics/clients` - Client analysis
-- `GET /api/analytics/company-comparison` - Company vs competitors
-- `GET /api/analytics/trends` - Monthly trends
-- `GET /api/analytics/months` - Available months
+### Intelligence
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/intelligence/prospective-clients` | Find potential buyers |
+| GET | `/api/intelligence/cross-sell` | Cross-sell opportunities |
 
-### Data
-- `POST /api/upload` - Upload Excel file
-- `GET /api/company` - Get company info
-- `PUT /api/company` - Update company name
+### Feedback
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/feedback` | Submit feedback |
+| GET | `/api/feedback` | View all feedback |
 
-## Future Roadmap
+---
 
-### Phase 2: Desktop App
-- Electron wrapper for Windows/Mac/Linux
-- Offline capability
-- Local data backup
-
-### Phase 3: Mobile App
-- React Native for Android
-- Push notifications for important changes
-- Quick view dashboards
-
-### Phase 4: Advanced Features
-- PDF report generation
-- Email alerts for competitor activity
-- Predictive analytics
-- Multi-user support with roles
-
-## Project Structure
+## 📁 Project Structure
 
 ```
-EDE/
+export-data-explorer/
 ├── client/                 # React frontend
 │   ├── src/
-│   │   ├── App.jsx        # Main application
+│   │   ├── App.jsx        # Main application component
 │   │   ├── main.jsx       # Entry point
-│   │   └── index.css      # Styles
+│   │   └── index.css      # TailwindCSS styles
 │   ├── public/
+│   ├── dist/              # Production build (generated)
 │   └── package.json
 ├── server/
 │   ├── index.js           # Express API server
 │   ├── database.sqlite    # SQLite database (auto-created)
 │   └── uploads/           # Temporary upload folder
+├── sample-data/           # Sample data templates
+├── scripts/               # Utility scripts
 ├── package.json           # Root package.json
+├── railway.json           # Railway deployment config
+├── Procfile              # Process file for deployment
 └── README.md
 ```
 
-## Contributing
+---
+
+## 🗺️ Roadmap
+
+- [x] Web Application
+- [x] Excel Import with smart column detection
+- [x] Competitor & Client tracking
+- [x] Dashboard with charts
+- [x] Intelligence (Prospective Clients, Cross-sell)
+- [x] PDF Export
+- [x] Dual currency display (USD/INR)
+- [x] Feedback system
+- [x] Cloud deployment (Railway)
+- [ ] Desktop App (Electron)
+- [ ] Mobile App (Android)
+- [ ] Email alerts
+- [ ] Multi-user support
+
+---
+
+## 🤝 Contributing
 
 1. Fork the repository
 2. Create your feature branch (`git checkout -b feature/amazing-feature`)
@@ -199,15 +274,18 @@ EDE/
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
 
-## License
+---
+
+## 📝 Feedback
+
+Use the in-app feedback button (yellow chat icon) or [open a GitHub issue](https://github.com/nischalagrawal-source/export-data-explorer/issues).
+
+---
+
+## 📄 License
 
 MIT License - feel free to use for personal and commercial projects.
-
-## Support
-
-For issues and feature requests, please open a GitHub issue.
 
 ---
 
 Built with ❤️ for Indian Export Data Analysis
-
