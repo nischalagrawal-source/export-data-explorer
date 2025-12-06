@@ -1,0 +1,1654 @@
+import express from 'express';
+import cors from 'cors';
+import multer from 'multer';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import initSqlJs from 'sql.js';
+import XLSX from 'xlsx';
+import fs from 'fs';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const app = express();
+const PORT = process.env.PORT || 3001;
+const HOST = '0.0.0.0';
+
+// Middleware
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type']
+}));
+app.use(express.json());
+
+// Serve static files from the built frontend
+const clientDistPath = path.join(__dirname, '..', 'client', 'dist');
+if (fs.existsSync(clientDistPath)) {
+  app.use(express.static(clientDistPath));
+}
+
+// Ensure uploads directory exists
+const uploadsDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
+// Multer config for file uploads
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, uploadsDir),
+  filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname}`)
+});
+const upload = multer({ storage });
+
+// Database setup
+const dbPath = path.join(__dirname, 'database.sqlite');
+let db;
+
+// Flag to control auto-save (disable during bulk imports)
+let autoSave = true;
+
+// Helper to run queries
+const run = (sql, params = []) => {
+  try {
+    if (params.length > 0) {
+      const stmt = db.prepare(sql);
+      stmt.bind(params);
+      stmt.step();
+      stmt.free();
+    } else {
+      db.run(sql);
+    }
+    if (autoSave) {
+      saveDb();
+    }
+  } catch (err) {
+    throw err;
+  }
+};
+
+const get = (sql, params = []) => {
+  try {
+    const stmt = db.prepare(sql);
+    if (params.length > 0) {
+      stmt.bind(params);
+    }
+    if (stmt.step()) {
+      const result = stmt.getAsObject();
+      stmt.free();
+      return result;
+    }
+    stmt.free();
+    return null;
+  } catch (err) {
+    console.error('DB get error:', err.message);
+    return null;
+  }
+};
+
+const all = (sql, params = []) => {
+  try {
+    const stmt = db.prepare(sql);
+    if (params.length > 0) {
+      stmt.bind(params);
+    }
+    const results = [];
+    while (stmt.step()) {
+      results.push(stmt.getAsObject());
+    }
+    stmt.free();
+    return results;
+  } catch (err) {
+    console.error('DB all error:', err.message);
+    return [];
+  }
+};
+
+const saveDb = () => {
+  const data = db.export();
+  const buffer = Buffer.from(data);
+  fs.writeFileSync(dbPath, buffer);
+};
+
+// Initialize database
+async function initDb() {
+  const SQL = await initSqlJs();
+  
+  // Load existing database or create new
+  if (fs.existsSync(dbPath)) {
+    const buffer = fs.readFileSync(dbPath);
+    db = new SQL.Database(buffer);
+  } else {
+    db = new SQL.Database();
+  }
+
+  // Initialize tables
+  db.run(`
+    CREATE TABLE IF NOT EXISTS competitors (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT UNIQUE NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      active INTEGER DEFAULT 1
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS clients (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT UNIQUE NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      active INTEGER DEFAULT 1
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS exports (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      declaration_id TEXT NOT NULL,
+      exporter_name TEXT,
+      consignee_name TEXT,
+      product_description TEXT,
+      product_category TEXT,
+      data_type TEXT CHECK(data_type IN ('fruits', 'vegetables')),
+      hs_code TEXT,
+      quantity REAL,
+      unit TEXT,
+      fob_value REAL,
+      fob_currency TEXT DEFAULT 'USD',
+      port_of_loading TEXT,
+      port_of_discharge TEXT,
+      country_of_destination TEXT,
+      shipment_date DATE,
+      month_year TEXT,
+      upload_batch TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  
+  // Create unique index on declaration_id + shipment_date + product_description + data_type
+  db.run(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_exports_unique 
+    ON exports(declaration_id, shipment_date, product_description, hs_code, quantity, fob_value)
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS company_info (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      company_name TEXT NOT NULL DEFAULT 'AGNA',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // Create indexes
+  db.run(`CREATE INDEX IF NOT EXISTS idx_exports_exporter ON exports(exporter_name)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_exports_consignee ON exports(consignee_name)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_exports_date ON exports(shipment_date)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_exports_month ON exports(month_year)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_exports_declaration ON exports(declaration_id)`);
+
+  // Create feedback table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS feedback (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_name TEXT,
+      feedback_type TEXT,
+      message TEXT NOT NULL,
+      page TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // Insert default company if not exists
+  const companyExists = get('SELECT COUNT(*) as count FROM company_info');
+  if (!companyExists || companyExists.count === 0) {
+    run('INSERT INTO company_info (company_name) VALUES (?)', ['AGNA']);
+  }
+
+  saveDb();
+  console.log('📦 Database initialized');
+}
+
+// ============= COMPETITORS ROUTES =============
+app.get('/api/competitors', (req, res) => {
+  const competitors = all('SELECT * FROM competitors WHERE active = 1 ORDER BY name');
+  res.json(competitors);
+});
+
+// Search for potential competitor matches in export data
+app.get('/api/competitors/search', (req, res) => {
+  const { q } = req.query;
+  if (!q || q.length < 2) {
+    return res.json([]);
+  }
+  
+  const searchTerm = q.trim().toUpperCase();
+  const words = searchTerm.split(/\s+/).filter(w => w.length > 1);
+  
+  // Search for exporters matching any of the words
+  let query = `
+    SELECT DISTINCT exporter_name as name, 
+           COUNT(*) as shipment_count,
+           SUM(fob_value) as total_fob
+    FROM exports 
+    WHERE exporter_name IS NOT NULL AND exporter_name != ''
+  `;
+  
+  if (words.length > 0) {
+    const conditions = words.map(() => `UPPER(exporter_name) LIKE ?`).join(' OR ');
+    query += ` AND (${conditions})`;
+  }
+  
+  query += ` GROUP BY exporter_name ORDER BY shipment_count DESC LIMIT 20`;
+  
+  const params = words.map(w => `%${w}%`);
+  const results = all(query, params);
+  
+  // Also check if already tracked
+  const tracked = all('SELECT name FROM competitors WHERE active = 1');
+  const trackedNames = new Set(tracked.map(t => t.name));
+  
+  const enriched = results.map(r => ({
+    ...r,
+    already_tracked: trackedNames.has(r.name)
+  }));
+  
+  res.json(enriched);
+});
+
+app.post('/api/competitors', (req, res) => {
+  const { name, names } = req.body;
+  
+  // Support adding multiple names at once
+  const namesToAdd = names || [name];
+  const added = [];
+  const errors = [];
+  
+  for (const n of namesToAdd) {
+    if (!n || !n.trim()) continue;
+    try {
+      run('INSERT INTO competitors (name) VALUES (?)', [n.trim().toUpperCase()]);
+      const result = get('SELECT last_insert_rowid() as id');
+      added.push({ id: result.id, name: n.trim().toUpperCase() });
+    } catch (err) {
+      if (err.message && err.message.includes('UNIQUE')) {
+        errors.push({ name: n, error: 'Already exists' });
+      } else {
+        errors.push({ name: n, error: err.message });
+      }
+    }
+  }
+  
+  res.json({ added, errors });
+});
+
+app.delete('/api/competitors/:id', (req, res) => {
+  run('UPDATE competitors SET active = 0 WHERE id = ?', [parseInt(req.params.id)]);
+  res.json({ success: true });
+});
+
+// ============= CLIENTS ROUTES =============
+app.get('/api/clients', (req, res) => {
+  const clients = all('SELECT * FROM clients WHERE active = 1 ORDER BY name');
+  res.json(clients);
+});
+
+// Search for potential client matches in export data
+app.get('/api/clients/search', (req, res) => {
+  const { q } = req.query;
+  if (!q || q.length < 2) {
+    return res.json([]);
+  }
+  
+  const searchTerm = q.trim().toUpperCase();
+  const words = searchTerm.split(/\s+/).filter(w => w.length > 1);
+  
+  // Search for consignees matching any of the words
+  let query = `
+    SELECT DISTINCT consignee_name as name, 
+           COUNT(*) as shipment_count,
+           SUM(fob_value) as total_fob,
+           GROUP_CONCAT(DISTINCT country_of_destination) as countries
+    FROM exports 
+    WHERE consignee_name IS NOT NULL AND consignee_name != ''
+  `;
+  
+  if (words.length > 0) {
+    const conditions = words.map(() => `UPPER(consignee_name) LIKE ?`).join(' OR ');
+    query += ` AND (${conditions})`;
+  }
+  
+  query += ` GROUP BY consignee_name ORDER BY shipment_count DESC LIMIT 20`;
+  
+  const params = words.map(w => `%${w}%`);
+  const results = all(query, params);
+  
+  // Also check if already tracked
+  const tracked = all('SELECT name FROM clients WHERE active = 1');
+  const trackedNames = new Set(tracked.map(t => t.name));
+  
+  const enriched = results.map(r => ({
+    ...r,
+    already_tracked: trackedNames.has(r.name)
+  }));
+  
+  res.json(enriched);
+});
+
+app.post('/api/clients', (req, res) => {
+  const { name, names } = req.body;
+  
+  // Support adding multiple names at once
+  const namesToAdd = names || [name];
+  const added = [];
+  const errors = [];
+  
+  for (const n of namesToAdd) {
+    if (!n || !n.trim()) continue;
+    try {
+      run('INSERT INTO clients (name) VALUES (?)', [n.trim().toUpperCase()]);
+      const result = get('SELECT last_insert_rowid() as id');
+      added.push({ id: result.id, name: n.trim().toUpperCase() });
+    } catch (err) {
+      if (err.message && err.message.includes('UNIQUE')) {
+        errors.push({ name: n, error: 'Already exists' });
+      } else {
+        errors.push({ name: n, error: err.message });
+      }
+    }
+  }
+  
+  res.json({ added, errors });
+});
+
+app.delete('/api/clients/:id', (req, res) => {
+  run('UPDATE clients SET active = 0 WHERE id = ?', [parseInt(req.params.id)]);
+  res.json({ success: true });
+});
+
+// ============= COMPANY ROUTES =============
+app.get('/api/company', (req, res) => {
+  const company = get('SELECT * FROM company_info LIMIT 1');
+  res.json(company);
+});
+
+app.put('/api/company', (req, res) => {
+  const { company_name } = req.body;
+  run('UPDATE company_info SET company_name = ?', [company_name.trim().toUpperCase()]);
+  res.json({ success: true });
+});
+
+// Helper function to find column value with flexible matching
+const findColumnValue = (row, possibleNames) => {
+  const rowKeys = Object.keys(row);
+  
+  // Build a map of normalized key names to actual keys
+  const keyMap = {};
+  for (const key of rowKeys) {
+    const normalized = key.toLowerCase().replace(/[\s_-]+/g, '');
+    keyMap[normalized] = key;
+  }
+  
+  // Try each possible name
+  for (const name of possibleNames) {
+    // Direct match
+    if (row[name] !== undefined && row[name] !== null && String(row[name]).trim() !== '') {
+      return row[name];
+    }
+    
+    // Normalized match
+    const normalizedName = name.toLowerCase().replace(/[\s_-]+/g, '');
+    if (keyMap[normalizedName]) {
+      const val = row[keyMap[normalizedName]];
+      if (val !== undefined && val !== null && String(val).trim() !== '') {
+        return val;
+      }
+    }
+  }
+  
+  // Partial match - check if any key contains any of the possible names
+  for (const name of possibleNames) {
+    const normalizedName = name.toLowerCase().replace(/[\s_-]+/g, '');
+    for (const [normalized, actualKey] of Object.entries(keyMap)) {
+      if (normalized.includes(normalizedName) || normalizedName.includes(normalized)) {
+        const val = row[actualKey];
+        if (val !== undefined && val !== null && String(val).trim() !== '') {
+          return val;
+        }
+      }
+    }
+  }
+  
+  return '';
+};
+
+// ============= FILE UPLOAD ROUTE =============
+app.post('/api/upload', upload.single('file'), (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'No file uploaded' });
+  }
+
+  const { dataType } = req.body;
+  if (!dataType || !['fruits', 'vegetables'].includes(dataType)) {
+    return res.status(400).json({ error: 'Invalid data type. Must be "fruits" or "vegetables"' });
+  }
+
+  try {
+    const workbook = XLSX.readFile(req.file.path);
+    const sheetName = workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[sheetName];
+    const data = XLSX.utils.sheet_to_json(worksheet);
+
+    if (data.length === 0) {
+      return res.status(400).json({ error: 'Excel file is empty' });
+    }
+
+    // Get column names from first row
+    const columns = data.length > 0 ? Object.keys(data[0]) : [];
+    console.log('Found columns:', columns);
+    
+    // Debug: Log first row to see actual data
+    if (data.length > 0) {
+      console.log('First row sample:', JSON.stringify(data[0], null, 2));
+    }
+
+    const uploadBatch = `${Date.now()}-${dataType}`;
+    let inserted = 0;
+    let skipped = 0;
+    let noIdCount = 0;
+    
+    // Disable auto-save during bulk import for performance
+    autoSave = false;
+
+    // Column name variations for Indian export data
+    const declarationIdNames = [
+      'Declaration ID', 'DECLARATION_ID', 'declaration_id', 'Dec ID',
+      'Declaration No', 'DECLARATION_NO', 'declaration_no', 'Declaration_No',
+      'DeclarationNo', 'DECLARATIONNO', 'Dec No', 'DEC_NO', 'DecNo',
+      'SB No', 'SB_No', 'SB NO', 'SB_NO', 'SBNO', 'Sb No', 
+      'Shipping Bill No', 'SHIPPING_BILL_NO', 'Shipping Bill Number',
+      'Bill No', 'BILL_NO', 'Bill Number', 'Reference No', 'Ref No',
+      'Invoice No', 'INVOICE_NO', 'Invoice Number', 'ID', 'Sr No', 'SrNo',
+      'S.No', 'SNO', 'Record ID', 'RECORD_ID', 'Unique ID'
+    ];
+    
+    const exporterNames = [
+      'Exporter Name', 'EXPORTER_NAME', 'exporter_name', 'Exporter',
+      'EXPORTER', 'Indian Exporter', 'INDIAN_EXPORTER', 'Shipper',
+      'SHIPPER', 'Shipper Name', 'Seller', 'SELLER', 'Seller Name',
+      'Company', 'Company Name', 'COMPANY_NAME', 'Supplier', 'SUPPLIER'
+    ];
+    
+    const consigneeNames = [
+      'Consignee Name', 'CONSIGNEE_NAME', 'consignee_name', 'Consignee',
+      'CONSIGNEE', 'Buyer', 'BUYER', 'Buyer Name', 'BUYER_NAME',
+      'Foreign Buyer', 'FOREIGN_BUYER', 'Importer', 'IMPORTER',
+      'Importer Name', 'Customer', 'CUSTOMER', 'Customer Name',
+      'Consinee Name', 'CONSINEE_NAME', 'Consinee', 'CONSINEE'
+    ];
+    
+    const productNames = [
+      'Product Description', 'PRODUCT_DESCRIPTION', 'product_description',
+      'Product', 'PRODUCT', 'Item', 'ITEM', 'Item Description',
+      'ITEM_DESCRIPTION', 'Description', 'DESCRIPTION', 'Goods',
+      'GOODS', 'Goods Description', 'GOODS_DESCRIPTION', 'Goods_Description',
+      'Product Name', 'PRODUCT_NAME', 'Commodity', 'COMMODITY', 
+      'HS Description', 'Item Name', 'ItemDescription'
+    ];
+    
+    const hsCodeNames = [
+      'HS Code', 'HS_CODE', 'hs_code', 'HSCode', 'HSCODE', 'HS',
+      'ITC Code', 'ITC_CODE', 'ITCCode', 'ITC HS', 'ITC_HS',
+      'Tariff Code', 'TARIFF_CODE', 'Chapter', 'CHAPTER'
+    ];
+    
+    const quantityNames = [
+      'Quantity', 'QUANTITY', 'quantity', 'Qty', 'QTY', 'qty',
+      'Unit Quantity', 'UNIT_QUANTITY', 'Net Quantity', 'NET_QUANTITY',
+      'Weight', 'WEIGHT', 'Net Weight', 'NET_WEIGHT', 'Gross Weight'
+    ];
+    
+    const unitNames = [
+      'Unit', 'UNIT', 'unit', 'UQC', 'UOM', 'Unit of Measure',
+      'UNIT_OF_MEASURE', 'Quantity Unit', 'QUANTITY_UNIT'
+    ];
+    
+    const fobNames = [
+      'FOB Value', 'FOB_VALUE', 'fob_value', 'FOB', 'Fob',
+      'FOB USD', 'FOB_USD', 'Fob Usd', 'FOB Usd', 'Fob USD',
+      'FOB INR', 'FOB_INR', 'Fob Inr', 'Value',
+      'VALUE', 'Invoice Value', 'INVOICE_VALUE', 'Total Value',
+      'TOTAL_VALUE', 'Amount', 'AMOUNT', 'Price', 'PRICE',
+      'Value USD', 'Value INR', 'FOB (USD)', 'FOB (INR)'
+    ];
+    
+    const currencyNames = [
+      'Currency', 'CURRENCY', 'currency', 'Curr', 'CURR',
+      'Currency Code', 'CURRENCY_CODE'
+    ];
+    
+    const portLoadingNames = [
+      'Port of Loading', 'PORT_OF_LOADING', 'port_of_loading',
+      'Indian Port', 'INDIAN_PORT', 'Loading Port', 'LOADING_PORT',
+      'Port', 'PORT', 'Origin Port', 'ORIGIN_PORT', 'From Port',
+      'Departure Port', 'DEPARTURE_PORT', 'POL', 'Port Code'
+    ];
+    
+    const portDischargeNames = [
+      'Port of Discharge', 'PORT_OF_DISCHARGE', 'port_of_discharge',
+      'Foreign Port', 'FOREIGN_PORT', 'Discharge Port', 'DISCHARGE_PORT',
+      'Destination Port', 'DESTINATION_PORT', 'To Port', 'POD',
+      'Arrival Port', 'ARRIVAL_PORT', 'Final Port'
+    ];
+    
+    const countryNames = [
+      'Country', 'COUNTRY', 'country', 'Destination Country',
+      'DESTINATION_COUNTRY', 'Country of Destination', 'COUNTRY_OF_DESTINATION',
+      'Destination', 'DESTINATION', 'Foreign Country', 'FOREIGN_COUNTRY',
+      'Importing Country', 'IMPORTING_COUNTRY', 'To Country'
+    ];
+    
+    const dateNames = [
+      'Shipment Date', 'SHIPMENT_DATE', 'shipment_date', 'Date', 'DATE',
+      'SB Date', 'SB_DATE', 'Shipping Date', 'SHIPPING_DATE',
+      'Bill Date', 'BILL_DATE', 'Export Date', 'EXPORT_DATE',
+      'Invoice Date', 'INVOICE_DATE', 'Dispatch Date', 'DISPATCH_DATE'
+    ];
+
+    let debugCount = 0;
+    let progressCount = 0;
+    const totalRows = data.length;
+    
+    // Process in batches for better performance
+    console.log(`Processing ${totalRows} rows...`);
+    
+    for (const row of data) {
+      progressCount++;
+      if (progressCount % 5000 === 0) {
+        console.log(`Progress: ${progressCount}/${totalRows} rows processed (${inserted} inserted, ${skipped} skipped)...`);
+        // Save periodically during bulk import
+        saveDb();
+      }
+      // Map Excel columns to database fields using flexible matching
+      const declarationId = findColumnValue(row, declarationIdNames);
+      const exporterName = findColumnValue(row, exporterNames);
+      const consigneeName = findColumnValue(row, consigneeNames);
+      const productDesc = findColumnValue(row, productNames);
+      const hsCode = findColumnValue(row, hsCodeNames);
+      const quantity = parseFloat(findColumnValue(row, quantityNames) || 0);
+      const unit = findColumnValue(row, unitNames) || 'KGS';
+      const fobValue = parseFloat(String(findColumnValue(row, fobNames) || 0).replace(/[^0-9.-]/g, '')) || 0;
+      const fobCurrency = findColumnValue(row, currencyNames) || 'USD';
+      const portLoading = findColumnValue(row, portLoadingNames);
+      const portDischarge = findColumnValue(row, portDischargeNames);
+      const countryDest = findColumnValue(row, countryNames);
+      
+      // Debug first 3 rows
+      if (debugCount < 3) {
+        console.log(`Row ${debugCount + 1} extracted values:`, {
+          declarationId,
+          exporterName,
+          consigneeName,
+          productDesc: productDesc?.substring(0, 50),
+          fobValue,
+          hsCode
+        });
+        debugCount++;
+      }
+      
+      // Parse date
+      let shipmentDate = null;
+      let monthYear = null;
+      const dateValue = findColumnValue(row, dateNames);
+      if (dateValue) {
+        if (typeof dateValue === 'number') {
+          // Excel serial date
+          const date = XLSX.SSF.parse_date_code(dateValue);
+          if (date) {
+            shipmentDate = `${date.y}-${String(date.m).padStart(2, '0')}-${String(date.d).padStart(2, '0')}`;
+            monthYear = `${date.y}-${String(date.m).padStart(2, '0')}`;
+          }
+        } else {
+          // Try parsing various date formats
+          const dateStr = String(dateValue);
+          let parsed = new Date(dateStr);
+          
+          // Try DD-MM-YYYY or DD/MM/YYYY format
+          if (isNaN(parsed)) {
+            const parts = dateStr.split(/[-\/]/);
+            if (parts.length === 3) {
+              // Assume DD-MM-YYYY
+              parsed = new Date(parts[2], parts[1] - 1, parts[0]);
+            }
+          }
+          
+          if (!isNaN(parsed) && parsed.getFullYear() > 1900) {
+            shipmentDate = parsed.toISOString().split('T')[0];
+            monthYear = `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, '0')}`;
+          }
+        }
+      }
+
+      // Use a combination of fields to create unique ID if no declaration ID
+      let uniqueId = declarationId;
+      if (!uniqueId || uniqueId === '') {
+        // Create a composite key from available data
+        const composite = `${exporterName}-${consigneeName}-${productDesc}-${dateValue}-${fobValue}`;
+        if (composite !== '----0') {
+          uniqueId = `AUTO-${Buffer.from(composite).toString('base64').slice(0, 20)}-${Math.random().toString(36).slice(2, 8)}`;
+        }
+      }
+
+      if (uniqueId && uniqueId !== '') {
+        // Try to insert - let database handle duplicates via unique constraint
+        try {
+          run(`
+            INSERT INTO exports (
+              declaration_id, exporter_name, consignee_name, product_description,
+              product_category, data_type, hs_code, quantity, unit, fob_value,
+              fob_currency, port_of_loading, port_of_discharge, country_of_destination,
+              shipment_date, month_year, upload_batch
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `, [
+            uniqueId.toString().trim(),
+            (exporterName || '').toString().trim().toUpperCase(),
+            (consigneeName || '').toString().trim().toUpperCase(),
+            (productDesc || '').toString().trim(),
+            dataType,
+            dataType,
+            String(hsCode || '').trim(),
+            quantity || 0,
+            (unit || 'KGS').toString().trim(),
+            fobValue || 0,
+            (fobCurrency || 'USD').toString().trim(),
+            (portLoading || '').toString().trim(),
+            (portDischarge || '').toString().trim(),
+            (countryDest || '').toString().trim(),
+            shipmentDate,
+            monthYear,
+            uploadBatch
+          ]);
+          inserted++;
+        } catch (insertErr) {
+          // Log first 5 errors to understand the issue
+          if (skipped < 5) {
+            console.error(`Insert error for row ${progressCount}:`, insertErr.message);
+            console.error('Data:', { uniqueId, exporterName, productDesc: productDesc?.substring(0,30), shipmentDate });
+          }
+          skipped++;
+        }
+      } else {
+        noIdCount++;
+        skipped++;
+      }
+    }
+
+    // Final save and re-enable auto-save
+    saveDb();
+    autoSave = true;
+    
+    console.log(`Import complete: ${inserted} inserted, ${skipped} skipped, ${noIdCount} no ID`);
+
+    // Clean up uploaded file
+    fs.unlinkSync(req.file.path);
+
+    res.json({
+      success: true,
+      message: `Processed ${data.length} rows`,
+      inserted,
+      skipped,
+      noIdCount,
+      dataType,
+      columnsFound: columns
+    });
+  } catch (err) {
+    console.error('Upload error:', err);
+    console.error('Error stack:', err.stack);
+    res.status(500).json({ error: err.message, stack: err.stack });
+  }
+});
+
+// ============= ANALYTICS ROUTES =============
+
+// Get available months
+app.get('/api/analytics/months', (req, res) => {
+  const months = all(`
+    SELECT DISTINCT month_year FROM exports 
+    WHERE month_year IS NOT NULL 
+    ORDER BY month_year DESC
+  `);
+  res.json(months.map(m => m.month_year));
+});
+
+// Competitor Analysis
+app.get('/api/analytics/competitors', (req, res) => {
+  const { month, compareMonth } = req.query;
+  
+  const competitors = all('SELECT name FROM competitors WHERE active = 1');
+  const competitorNames = competitors.map(c => c.name);
+
+  if (competitorNames.length === 0) {
+    return res.json({ competitors: [], comparison: [] });
+  }
+
+  const placeholders = competitorNames.map(() => '?').join(',');
+  
+  let query = `
+    SELECT 
+      exporter_name,
+      COUNT(DISTINCT declaration_id) as shipment_count,
+      SUM(fob_value) as total_fob,
+      COUNT(DISTINCT product_description) as product_count,
+      COUNT(DISTINCT country_of_destination) as country_count,
+      GROUP_CONCAT(DISTINCT data_type) as categories,
+      MIN(shipment_date) as first_shipment,
+      MAX(shipment_date) as last_shipment
+    FROM exports 
+    WHERE UPPER(exporter_name) IN (${placeholders})
+  `;
+  
+  const params = [...competitorNames];
+  
+  if (month) {
+    query += ' AND month_year = ?';
+    params.push(month);
+  }
+  
+  query += ' GROUP BY exporter_name ORDER BY total_fob DESC';
+  
+  const results = all(query, params);
+
+  // Get comparison data if compareMonth provided
+  let comparison = [];
+  if (compareMonth && month) {
+    const compQuery = `
+      SELECT 
+        exporter_name,
+        COUNT(DISTINCT declaration_id) as shipment_count,
+        SUM(fob_value) as total_fob
+      FROM exports 
+      WHERE UPPER(exporter_name) IN (${placeholders})
+      AND month_year = ?
+      GROUP BY exporter_name
+    `;
+    comparison = all(compQuery, [...competitorNames, compareMonth]);
+  }
+
+  res.json({ competitors: results, comparison });
+});
+
+// Client Analysis
+app.get('/api/analytics/clients', (req, res) => {
+  const { month, compareMonth } = req.query;
+  
+  const clients = all('SELECT name FROM clients WHERE active = 1');
+  const clientNames = clients.map(c => c.name);
+
+  if (clientNames.length === 0) {
+    return res.json({ clients: [], comparison: [] });
+  }
+
+  const placeholders = clientNames.map(() => '?').join(',');
+  
+  let query = `
+    SELECT 
+      consignee_name,
+      COUNT(DISTINCT declaration_id) as shipment_count,
+      SUM(fob_value) as total_fob,
+      COUNT(DISTINCT product_description) as product_count,
+      COUNT(DISTINCT exporter_name) as supplier_count,
+      GROUP_CONCAT(DISTINCT data_type) as categories,
+      MIN(shipment_date) as first_shipment,
+      MAX(shipment_date) as last_shipment
+    FROM exports 
+    WHERE UPPER(consignee_name) IN (${placeholders})
+  `;
+  
+  const params = [...clientNames];
+  
+  if (month) {
+    query += ' AND month_year = ?';
+    params.push(month);
+  }
+  
+  query += ' GROUP BY consignee_name ORDER BY total_fob DESC';
+  
+  const results = all(query, params);
+
+  // Get comparison data
+  let comparison = [];
+  if (compareMonth && month) {
+    const compQuery = `
+      SELECT 
+        consignee_name,
+        COUNT(DISTINCT declaration_id) as shipment_count,
+        SUM(fob_value) as total_fob
+      FROM exports 
+      WHERE UPPER(consignee_name) IN (${placeholders})
+      AND month_year = ?
+      GROUP BY consignee_name
+    `;
+    comparison = all(compQuery, [...clientNames, compareMonth]);
+  }
+
+  res.json({ clients: results, comparison });
+});
+
+// AGNA vs Competitors Analysis
+app.get('/api/analytics/company-comparison', (req, res) => {
+  const { month } = req.query;
+  
+  const company = get('SELECT company_name FROM company_info LIMIT 1');
+  const competitors = all('SELECT name FROM competitors WHERE active = 1');
+  
+  const companyName = company?.company_name || 'AGNA';
+  const allNames = [companyName, ...competitors.map(c => c.name)];
+  const placeholders = allNames.map(() => '?').join(',');
+  
+  let query = `
+    SELECT 
+      exporter_name,
+      COUNT(DISTINCT declaration_id) as shipment_count,
+      SUM(fob_value) as total_fob,
+      AVG(fob_value) as avg_fob,
+      COUNT(DISTINCT product_description) as product_count,
+      COUNT(DISTINCT country_of_destination) as country_count,
+      COUNT(DISTINCT consignee_name) as client_count,
+      data_type
+    FROM exports 
+    WHERE UPPER(exporter_name) IN (${placeholders})
+  `;
+  
+  const params = [...allNames];
+  
+  if (month) {
+    query += ' AND month_year = ?';
+    params.push(month);
+  }
+  
+  query += ' GROUP BY exporter_name, data_type ORDER BY total_fob DESC';
+  
+  const results = all(query, params);
+  
+  // Aggregate by company
+  const aggregated = {};
+  results.forEach(r => {
+    if (!aggregated[r.exporter_name]) {
+      aggregated[r.exporter_name] = {
+        exporter_name: r.exporter_name,
+        shipment_count: 0,
+        total_fob: 0,
+        product_count: 0,
+        country_count: 0,
+        client_count: 0,
+        is_company: r.exporter_name === companyName,
+        categories: []
+      };
+    }
+    aggregated[r.exporter_name].shipment_count += r.shipment_count;
+    aggregated[r.exporter_name].total_fob += r.total_fob;
+    aggregated[r.exporter_name].product_count += r.product_count;
+    aggregated[r.exporter_name].country_count += r.country_count;
+    aggregated[r.exporter_name].client_count += r.client_count;
+    if (r.data_type) aggregated[r.exporter_name].categories.push(r.data_type);
+  });
+
+  res.json({
+    company_name: companyName,
+    data: Object.values(aggregated)
+  });
+});
+
+// Detailed analysis for a specific competitor or client
+app.get('/api/analytics/entity-details', (req, res) => {
+  const { entity, type, month } = req.query;
+  
+  if (!entity || !type) {
+    return res.status(400).json({ error: 'Entity and type required' });
+  }
+
+  const field = type === 'exporter' ? 'exporter_name' : 'consignee_name';
+  const params = [entity.toUpperCase()];
+  let monthFilter = '';
+  if (month) {
+    monthFilter = ' AND month_year = ?';
+    params.push(month);
+  }
+
+  // Summary stats
+  const summary = get(`
+    SELECT 
+      COUNT(DISTINCT declaration_id) as total_shipments,
+      SUM(fob_value) as total_fob,
+      SUM(quantity) as total_quantity,
+      COUNT(DISTINCT product_description) as unique_products,
+      COUNT(DISTINCT country_of_destination) as unique_countries,
+      COUNT(DISTINCT hs_code) as unique_hs_codes,
+      MIN(shipment_date) as first_shipment,
+      MAX(shipment_date) as last_shipment
+    FROM exports 
+    WHERE UPPER(${field}) = ?${monthFilter}
+  `, params);
+
+  // Products breakdown
+  const products = all(`
+    SELECT 
+      product_description,
+      hs_code,
+      data_type,
+      COUNT(DISTINCT declaration_id) as shipment_count,
+      SUM(quantity) as total_quantity,
+      SUM(fob_value) as total_fob,
+      AVG(fob_value) as avg_fob_per_shipment,
+      unit
+    FROM exports 
+    WHERE UPPER(${field}) = ?${monthFilter}
+    GROUP BY product_description, hs_code, data_type, unit
+    ORDER BY total_fob DESC
+    LIMIT 50
+  `, params);
+
+  // Countries breakdown
+  const countries = all(`
+    SELECT 
+      country_of_destination,
+      COUNT(DISTINCT declaration_id) as shipment_count,
+      SUM(quantity) as total_quantity,
+      SUM(fob_value) as total_fob
+    FROM exports 
+    WHERE UPPER(${field}) = ?${monthFilter}
+    GROUP BY country_of_destination
+    ORDER BY total_fob DESC
+  `, params);
+
+  // Ports breakdown
+  const ports = all(`
+    SELECT 
+      port_of_loading as indian_port,
+      port_of_discharge as foreign_port,
+      COUNT(DISTINCT declaration_id) as shipment_count,
+      SUM(fob_value) as total_fob
+    FROM exports 
+    WHERE UPPER(${field}) = ?${monthFilter}
+    GROUP BY port_of_loading, port_of_discharge
+    ORDER BY shipment_count DESC
+    LIMIT 20
+  `, params);
+
+  // Monthly trend for this entity
+  const monthlyTrend = all(`
+    SELECT 
+      month_year,
+      COUNT(DISTINCT declaration_id) as shipment_count,
+      SUM(quantity) as total_quantity,
+      SUM(fob_value) as total_fob
+    FROM exports 
+    WHERE UPPER(${field}) = ? AND month_year IS NOT NULL
+    GROUP BY month_year
+    ORDER BY month_year
+  `, [entity.toUpperCase()]);
+
+  // If it's a client, also get their suppliers
+  let suppliers = [];
+  if (type === 'consignee') {
+    suppliers = all(`
+      SELECT 
+        exporter_name,
+        COUNT(DISTINCT declaration_id) as shipment_count,
+        SUM(fob_value) as total_fob,
+        GROUP_CONCAT(DISTINCT product_description) as products
+      FROM exports 
+      WHERE UPPER(consignee_name) = ?${monthFilter}
+      GROUP BY exporter_name
+      ORDER BY total_fob DESC
+      LIMIT 20
+    `, params);
+  }
+
+  // If it's an exporter, get their clients
+  let clients = [];
+  if (type === 'exporter') {
+    clients = all(`
+      SELECT 
+        consignee_name,
+        country_of_destination,
+        COUNT(DISTINCT declaration_id) as shipment_count,
+        SUM(fob_value) as total_fob
+      FROM exports 
+      WHERE UPPER(exporter_name) = ?${monthFilter}
+      GROUP BY consignee_name, country_of_destination
+      ORDER BY total_fob DESC
+      LIMIT 20
+    `, params);
+  }
+
+  // Recent shipments with dates
+  const recentShipments = all(`
+    SELECT 
+      declaration_id,
+      shipment_date,
+      product_description,
+      quantity,
+      unit,
+      fob_value,
+      country_of_destination,
+      consignee_name,
+      exporter_name,
+      port_of_loading,
+      port_of_discharge
+    FROM exports 
+    WHERE UPPER(${field}) = ?${monthFilter}
+    ORDER BY shipment_date DESC
+    LIMIT 50
+  `, params);
+
+  res.json({
+    entity,
+    type,
+    summary,
+    products,
+    countries,
+    ports,
+    monthlyTrend,
+    suppliers,
+    clients,
+    recentShipments
+  });
+});
+
+// Detailed shipments for a specific entity
+app.get('/api/analytics/shipments', (req, res) => {
+  const { entity, type, month, page = 1, limit = 50 } = req.query;
+  
+  if (!entity || !type) {
+    return res.status(400).json({ error: 'Entity and type required' });
+  }
+
+  const offset = (parseInt(page) - 1) * parseInt(limit);
+  const field = type === 'exporter' ? 'exporter_name' : 'consignee_name';
+  
+  let query = `
+    SELECT * FROM exports 
+    WHERE UPPER(${field}) = ?
+  `;
+  const params = [entity.toUpperCase()];
+  
+  if (month) {
+    query += ' AND month_year = ?';
+    params.push(month);
+  }
+  
+  query += ` ORDER BY shipment_date DESC LIMIT ? OFFSET ?`;
+  params.push(parseInt(limit), offset);
+  
+  const shipments = all(query, params);
+  
+  // Get total count
+  let countQuery = `SELECT COUNT(*) as total FROM exports WHERE UPPER(${field}) = ?`;
+  const countParams = [entity.toUpperCase()];
+  if (month) {
+    countQuery += ' AND month_year = ?';
+    countParams.push(month);
+  }
+  const total = get(countQuery, countParams);
+
+  res.json({ shipments, total: total?.total || 0, page: parseInt(page), limit: parseInt(limit) });
+});
+
+// Product breakdown
+app.get('/api/analytics/products', (req, res) => {
+  const { entity, type, month } = req.query;
+  
+  const field = type === 'exporter' ? 'exporter_name' : 'consignee_name';
+  
+  let query = `
+    SELECT 
+      product_description,
+      data_type,
+      COUNT(DISTINCT declaration_id) as shipment_count,
+      SUM(quantity) as total_quantity,
+      SUM(fob_value) as total_fob
+    FROM exports
+  `;
+  
+  const params = [];
+  const conditions = [];
+  
+  if (entity) {
+    conditions.push(`UPPER(${field}) = ?`);
+    params.push(entity.toUpperCase());
+  }
+  
+  if (month) {
+    conditions.push('month_year = ?');
+    params.push(month);
+  }
+  
+  if (conditions.length > 0) {
+    query += ' WHERE ' + conditions.join(' AND ');
+  }
+  
+  query += ' GROUP BY product_description, data_type ORDER BY total_fob DESC LIMIT 50';
+  
+  const products = all(query, params);
+  res.json(products);
+});
+
+// Country breakdown
+app.get('/api/analytics/countries', (req, res) => {
+  const { entity, type, month } = req.query;
+  
+  const field = type === 'exporter' ? 'exporter_name' : 'consignee_name';
+  
+  let query = `
+    SELECT 
+      country_of_destination,
+      COUNT(DISTINCT declaration_id) as shipment_count,
+      SUM(fob_value) as total_fob
+    FROM exports
+  `;
+  
+  const params = [];
+  const conditions = [];
+  
+  if (entity) {
+    conditions.push(`UPPER(${field}) = ?`);
+    params.push(entity.toUpperCase());
+  }
+  
+  if (month) {
+    conditions.push('month_year = ?');
+    params.push(month);
+  }
+  
+  if (conditions.length > 0) {
+    query += ' WHERE ' + conditions.join(' AND ');
+  }
+  
+  query += ' GROUP BY country_of_destination ORDER BY total_fob DESC';
+  
+  const countries = all(query, params);
+  res.json(countries);
+});
+
+// Monthly trends
+app.get('/api/analytics/trends', (req, res) => {
+  const { entity, type } = req.query;
+  
+  let query = `
+    SELECT 
+      month_year,
+      COUNT(DISTINCT declaration_id) as shipment_count,
+      SUM(fob_value) as total_fob,
+      COUNT(DISTINCT product_description) as product_count
+    FROM exports
+    WHERE month_year IS NOT NULL
+  `;
+  
+  const params = [];
+  
+  if (entity && type) {
+    const field = type === 'exporter' ? 'exporter_name' : 'consignee_name';
+    query += ` AND UPPER(${field}) = ?`;
+    params.push(entity.toUpperCase());
+  }
+  
+  query += ' GROUP BY month_year ORDER BY month_year';
+  
+  const trends = all(query, params);
+  res.json(trends);
+});
+
+// Dashboard summary
+app.get('/api/analytics/dashboard', (req, res) => {
+  const { month } = req.query;
+  
+  let whereClause = '';
+  const params = [];
+  if (month) {
+    whereClause = 'WHERE month_year = ?';
+    params.push(month);
+  }
+
+  const summary = get(`
+    SELECT 
+      COUNT(DISTINCT declaration_id) as total_shipments,
+      SUM(fob_value) as total_fob,
+      COUNT(DISTINCT exporter_name) as unique_exporters,
+      COUNT(DISTINCT consignee_name) as unique_consignees,
+      COUNT(DISTINCT country_of_destination) as unique_countries,
+      COUNT(DISTINCT product_description) as unique_products
+    FROM exports ${whereClause}
+  `, params);
+
+  const byCategory = all(`
+    SELECT 
+      data_type,
+      COUNT(DISTINCT declaration_id) as shipment_count,
+      SUM(fob_value) as total_fob
+    FROM exports ${whereClause}
+    GROUP BY data_type
+  `, params);
+
+  const topExporters = all(`
+    SELECT 
+      exporter_name,
+      COUNT(DISTINCT declaration_id) as shipment_count,
+      SUM(fob_value) as total_fob
+    FROM exports ${whereClause}
+    GROUP BY exporter_name
+    ORDER BY total_fob DESC
+    LIMIT 10
+  `, params);
+
+  const topCountries = all(`
+    SELECT 
+      country_of_destination,
+      COUNT(DISTINCT declaration_id) as shipment_count,
+      SUM(fob_value) as total_fob
+    FROM exports ${whereClause}
+    GROUP BY country_of_destination
+    ORDER BY total_fob DESC
+    LIMIT 10
+  `, params);
+
+  res.json({ summary, byCategory, topExporters, topCountries });
+});
+
+// ============= INTELLIGENCE ROUTES =============
+
+// Find prospective clients based on company's products
+app.get('/api/intelligence/prospective-clients', (req, res) => {
+  const company = get('SELECT company_name FROM company_info LIMIT 1');
+  const companyName = company?.company_name || 'AGNA';
+  
+  // Get products that the company exports
+  const companyProducts = all(`
+    SELECT DISTINCT 
+      hs_code,
+      product_description,
+      data_type
+    FROM exports 
+    WHERE UPPER(exporter_name) LIKE ?
+  `, [`%${companyName}%`]);
+
+  if (companyProducts.length === 0) {
+    return res.json({ 
+      message: 'No products found for your company. Make sure your company name is set correctly in Settings.',
+      prospectiveClients: [],
+      companyProducts: []
+    });
+  }
+
+  const hsCodeList = companyProducts.map(p => p.hs_code).filter(h => h);
+  
+  if (hsCodeList.length === 0) {
+    return res.json({ 
+      message: 'No HS codes found for company products.',
+      prospectiveClients: [],
+      companyProducts 
+    });
+  }
+
+  const placeholders = hsCodeList.map(() => '?').join(',');
+  
+  // Find clients who buy similar products but NOT from this company
+  const prospectiveClients = all(`
+    SELECT 
+      consignee_name,
+      country_of_destination,
+      COUNT(DISTINCT declaration_id) as total_shipments,
+      SUM(fob_value) as total_fob,
+      SUM(quantity) as total_quantity,
+      GROUP_CONCAT(DISTINCT hs_code) as hs_codes,
+      GROUP_CONCAT(DISTINCT product_description) as products,
+      GROUP_CONCAT(DISTINCT exporter_name) as current_suppliers
+    FROM exports 
+    WHERE hs_code IN (${placeholders})
+    AND UPPER(exporter_name) NOT LIKE ?
+    AND consignee_name IS NOT NULL 
+    AND consignee_name != ''
+    AND UPPER(consignee_name) != 'NULL'
+    GROUP BY consignee_name, country_of_destination
+    HAVING total_shipments >= 2
+    ORDER BY total_fob DESC
+    LIMIT 100
+  `, [...hsCodeList, `%${companyName}%`]);
+
+  res.json({
+    companyName,
+    companyProducts,
+    prospectiveClients
+  });
+});
+
+// Cross-sell analysis - what are current clients buying from competitors
+app.get('/api/intelligence/cross-sell', (req, res) => {
+  const company = get('SELECT company_name FROM company_info LIMIT 1');
+  const companyName = company?.company_name || 'AGNA';
+  
+  // Get clients that buy from this company
+  const companyClients = all(`
+    SELECT DISTINCT consignee_name
+    FROM exports 
+    WHERE UPPER(exporter_name) LIKE ?
+    AND consignee_name IS NOT NULL 
+    AND consignee_name != ''
+    AND UPPER(consignee_name) != 'NULL'
+  `, [`%${companyName}%`]);
+
+  if (companyClients.length === 0) {
+    return res.json({ 
+      message: 'No clients found for your company.',
+      crossSellOpportunities: [],
+      clientCount: 0
+    });
+  }
+
+  const clientNames = companyClients.map(c => c.consignee_name);
+  const clientPlaceholders = clientNames.map(() => '?').join(',');
+  
+  // Get what company sells to these clients (HS codes)
+  const companyHsCodes = all(`
+    SELECT DISTINCT hs_code
+    FROM exports 
+    WHERE UPPER(exporter_name) LIKE ?
+    AND UPPER(consignee_name) IN (${clientPlaceholders})
+  `, [`%${companyName}%`, ...clientNames.map(n => n.toUpperCase())]);
+  
+  const companyHsCodeList = companyHsCodes.map(h => h.hs_code).filter(h => h);
+  
+  // Find what these clients buy from OTHER exporters that company doesn't supply
+  let crossSellOpportunities = [];
+  
+  if (companyHsCodeList.length > 0) {
+    const hsPlaceholders = companyHsCodeList.map(() => '?').join(',');
+    
+    crossSellOpportunities = all(`
+      SELECT 
+        e.consignee_name as client_name,
+        e.country_of_destination,
+        e.hs_code,
+        e.product_description,
+        e.exporter_name as competitor,
+        COUNT(DISTINCT e.declaration_id) as shipment_count,
+        SUM(e.fob_value) as total_fob,
+        SUM(e.quantity) as total_quantity,
+        e.unit
+      FROM exports e
+      WHERE UPPER(e.consignee_name) IN (${clientPlaceholders})
+      AND UPPER(e.exporter_name) NOT LIKE ?
+      AND e.hs_code NOT IN (${hsPlaceholders})
+      AND e.product_description IS NOT NULL
+      GROUP BY e.consignee_name, e.hs_code, e.product_description, e.exporter_name, e.country_of_destination, e.unit
+      ORDER BY total_fob DESC
+      LIMIT 100
+    `, [...clientNames.map(n => n.toUpperCase()), `%${companyName}%`, ...companyHsCodeList]);
+  } else {
+    // If no HS codes, just show what clients buy from others
+    crossSellOpportunities = all(`
+      SELECT 
+        e.consignee_name as client_name,
+        e.country_of_destination,
+        e.hs_code,
+        e.product_description,
+        e.exporter_name as competitor,
+        COUNT(DISTINCT e.declaration_id) as shipment_count,
+        SUM(e.fob_value) as total_fob,
+        SUM(e.quantity) as total_quantity,
+        e.unit
+      FROM exports e
+      WHERE UPPER(e.consignee_name) IN (${clientPlaceholders})
+      AND UPPER(e.exporter_name) NOT LIKE ?
+      AND e.product_description IS NOT NULL
+      GROUP BY e.consignee_name, e.hs_code, e.product_description, e.exporter_name, e.country_of_destination, e.unit
+      ORDER BY total_fob DESC
+      LIMIT 100
+    `, [...clientNames.map(n => n.toUpperCase()), `%${companyName}%`]);
+  }
+
+  res.json({
+    companyName,
+    clientCount: clientNames.length,
+    clientNames,
+    companyHsCodes: companyHsCodeList,
+    crossSellOpportunities
+  });
+});
+
+// ============= FEEDBACK ROUTES =============
+
+app.post('/api/feedback', (req, res) => {
+  const { user_name, feedback_type, message, page } = req.body;
+  if (!message) {
+    return res.status(400).json({ error: 'Message is required' });
+  }
+  try {
+    run(`INSERT INTO feedback (user_name, feedback_type, message, page) VALUES (?, ?, ?, ?)`,
+      [user_name || 'Anonymous', feedback_type || 'general', message, page || '']);
+    console.log(`📝 New feedback received: ${feedback_type} - ${message.substring(0, 50)}...`);
+    res.json({ success: true, message: 'Feedback submitted successfully' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/feedback', (req, res) => {
+  const feedbacks = all('SELECT * FROM feedback ORDER BY created_at DESC');
+  res.json(feedbacks);
+});
+
+// ============= EXPORT/REPORT ROUTES =============
+
+// Export competitor report
+app.get('/api/export/competitors', (req, res) => {
+  const { month } = req.query;
+  
+  const competitors = all('SELECT name FROM competitors WHERE active = 1');
+  const competitorNames = competitors.map(c => c.name);
+
+  if (competitorNames.length === 0) {
+    return res.status(400).json({ error: 'No competitors to export' });
+  }
+
+  const placeholders = competitorNames.map(() => '?').join(',');
+  
+  let query = `
+    SELECT 
+      exporter_name as "Exporter",
+      declaration_id as "Declaration ID",
+      consignee_name as "Consignee",
+      product_description as "Product",
+      data_type as "Category",
+      quantity as "Quantity",
+      unit as "Unit",
+      fob_value as "FOB Value",
+      fob_currency as "Currency",
+      port_of_loading as "Port of Loading",
+      port_of_discharge as "Port of Discharge",
+      country_of_destination as "Country",
+      shipment_date as "Shipment Date"
+    FROM exports 
+    WHERE UPPER(exporter_name) IN (${placeholders})
+  `;
+  
+  const params = [...competitorNames];
+  
+  if (month) {
+    query += ' AND month_year = ?';
+    params.push(month);
+  }
+  
+  query += ' ORDER BY shipment_date DESC, exporter_name';
+  
+  const data = all(query, params);
+  
+  // Create workbook
+  const ws = XLSX.utils.json_to_sheet(data);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Competitor Report');
+  
+  const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  
+  res.setHeader('Content-Disposition', `attachment; filename=competitor_report_${month || 'all'}.xlsx`);
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.send(buffer);
+});
+
+// Export client report
+app.get('/api/export/clients', (req, res) => {
+  const { month } = req.query;
+  
+  const clients = all('SELECT name FROM clients WHERE active = 1');
+  const clientNames = clients.map(c => c.name);
+
+  if (clientNames.length === 0) {
+    return res.status(400).json({ error: 'No clients to export' });
+  }
+
+  const placeholders = clientNames.map(() => '?').join(',');
+  
+  let query = `
+    SELECT 
+      consignee_name as "Client/Consignee",
+      exporter_name as "Supplier",
+      declaration_id as "Declaration ID",
+      product_description as "Product",
+      data_type as "Category",
+      quantity as "Quantity",
+      unit as "Unit",
+      fob_value as "FOB Value",
+      fob_currency as "Currency",
+      port_of_loading as "Port of Loading",
+      port_of_discharge as "Port of Discharge",
+      country_of_destination as "Country",
+      shipment_date as "Shipment Date"
+    FROM exports 
+    WHERE UPPER(consignee_name) IN (${placeholders})
+  `;
+  
+  const params = [...clientNames];
+  
+  if (month) {
+    query += ' AND month_year = ?';
+    params.push(month);
+  }
+  
+  query += ' ORDER BY shipment_date DESC, consignee_name';
+  
+  const data = all(query, params);
+  
+  const ws = XLSX.utils.json_to_sheet(data);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Client Report');
+  
+  const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  
+  res.setHeader('Content-Disposition', `attachment; filename=client_report_${month || 'all'}.xlsx`);
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.send(buffer);
+});
+
+// Export company comparison report
+app.get('/api/export/company-comparison', (req, res) => {
+  const { month } = req.query;
+  
+  const company = get('SELECT company_name FROM company_info LIMIT 1');
+  const competitors = all('SELECT name FROM competitors WHERE active = 1');
+  
+  const companyName = company?.company_name || 'AGNA';
+  const allNames = [companyName, ...competitors.map(c => c.name)];
+  const placeholders = allNames.map(() => '?').join(',');
+  
+  let query = `
+    SELECT 
+      exporter_name as "Company",
+      CASE WHEN UPPER(exporter_name) = ? THEN 'Your Company' ELSE 'Competitor' END as "Type",
+      declaration_id as "Declaration ID",
+      consignee_name as "Client",
+      product_description as "Product",
+      data_type as "Category",
+      quantity as "Quantity",
+      unit as "Unit",
+      fob_value as "FOB Value",
+      fob_currency as "Currency",
+      country_of_destination as "Country",
+      shipment_date as "Shipment Date"
+    FROM exports 
+    WHERE UPPER(exporter_name) IN (${placeholders})
+  `;
+  
+  const params = [companyName, ...allNames];
+  
+  if (month) {
+    query += ' AND month_year = ?';
+    params.push(month);
+  }
+  
+  query += ' ORDER BY exporter_name, shipment_date DESC';
+  
+  const data = all(query, params);
+  
+  const ws = XLSX.utils.json_to_sheet(data);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Company Comparison');
+  
+  const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  
+  res.setHeader('Content-Disposition', `attachment; filename=company_comparison_${month || 'all'}.xlsx`);
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.send(buffer);
+});
+
+// Export summary report
+app.get('/api/export/summary', (req, res) => {
+  const { month } = req.query;
+  
+  let whereClause = month ? 'WHERE month_year = ?' : '';
+  const params = month ? [month] : [];
+  
+  // Get summary data
+  const summary = all(`
+    SELECT 
+      exporter_name as "Exporter",
+      COUNT(DISTINCT declaration_id) as "Shipments",
+      SUM(fob_value) as "Total FOB",
+      COUNT(DISTINCT product_description) as "Products",
+      COUNT(DISTINCT country_of_destination) as "Countries",
+      COUNT(DISTINCT consignee_name) as "Clients",
+      GROUP_CONCAT(DISTINCT data_type) as "Categories"
+    FROM exports ${whereClause}
+    GROUP BY exporter_name
+    ORDER BY "Total FOB" DESC
+  `, params);
+  
+  const ws = XLSX.utils.json_to_sheet(summary);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Export Summary');
+  
+  const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  
+  res.setHeader('Content-Disposition', `attachment; filename=export_summary_${month || 'all'}.xlsx`);
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.send(buffer);
+});
+
+// Serve frontend for all other routes (SPA support)
+app.get('*', (req, res) => {
+  const indexPath = path.join(__dirname, '..', 'client', 'dist', 'index.html');
+  if (fs.existsSync(indexPath)) {
+    res.sendFile(indexPath);
+  } else {
+    res.status(404).json({ error: 'Frontend not built. Run: npm run build' });
+  }
+});
+
+// Start server after DB initialization
+initDb().then(() => {
+  app.listen(PORT, HOST, () => {
+    console.log(`🚀 Export Data Explorer running on port ${PORT}`);
+    console.log(`🌐 Access at: http://localhost:${PORT}`);
+  });
+}).catch(err => {
+  console.error('Failed to initialize database:', err);
+  process.exit(1);
+});
