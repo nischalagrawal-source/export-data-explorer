@@ -8,9 +8,15 @@ A comprehensive Indian Export Data Analysis System for tracking competitors, cli
 
 ## 🌐 Live Demo
 
-**Access the app:** [Your Railway URL here]
+🚀 **Deploy your own instance:**
 
-> Replace with your deployed URL after Railway deployment
+[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/template/github/nischalagrawal-source/export-data-explorer)
+
+Or manually deploy:
+1. Go to [Railway.app](https://railway.app)
+2. Click "New Project" → "Deploy from GitHub repo"
+3. Select this repository
+4. Get your URL from Settings → Networking → Generate Domain
 
 ---
 
