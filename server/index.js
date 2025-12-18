@@ -1437,6 +1437,490 @@ app.get('/api/feedback', (req, res) => {
   res.json(feedbacks);
 });
 
+// ============= CUSTOM REPORT ROUTES =============
+
+// Custom report by countries and/or companies
+app.get('/api/custom-report', (req, res) => {
+  const { countries, exporters, consignees, month } = req.query;
+  
+  const countryList = countries ? countries.split(',').map(c => c.trim().toUpperCase()).filter(c => c) : [];
+  const exporterList = exporters ? exporters.split(',').map(e => e.trim().toUpperCase()).filter(e => e) : [];
+  const consigneeList = consignees ? consignees.split(',').map(c => c.trim().toUpperCase()).filter(c => c) : [];
+  
+  if (countryList.length === 0 && exporterList.length === 0 && consigneeList.length === 0) {
+    return res.status(400).json({ error: 'Please provide at least one country, exporter, or consignee' });
+  }
+  
+  // Build query conditions
+  const conditions = [];
+  const params = [];
+  
+  if (countryList.length > 0) {
+    const placeholders = countryList.map(() => 'UPPER(country_of_destination) LIKE ?').join(' OR ');
+    conditions.push(`(${placeholders})`);
+    countryList.forEach(c => params.push(`%${c}%`));
+  }
+  
+  if (exporterList.length > 0) {
+    const placeholders = exporterList.map(() => 'UPPER(exporter_name) LIKE ?').join(' OR ');
+    conditions.push(`(${placeholders})`);
+    exporterList.forEach(e => params.push(`%${e}%`));
+  }
+  
+  if (consigneeList.length > 0) {
+    const placeholders = consigneeList.map(() => 'UPPER(consignee_name) LIKE ?').join(' OR ');
+    conditions.push(`(${placeholders})`);
+    consigneeList.forEach(c => params.push(`%${c}%`));
+  }
+  
+  let whereClause = conditions.join(' AND ');
+  if (month) {
+    whereClause += ' AND month_year = ?';
+    params.push(month);
+  }
+  
+  // Get summary data
+  const summary = all(`
+    SELECT 
+      CASE 
+        WHEN ? > 0 THEN country_of_destination
+        WHEN ? > 0 THEN exporter_name  
+        ELSE consignee_name
+      END as group_by,
+      COUNT(DISTINCT declaration_id) as total_shipments,
+      SUM(quantity) as total_quantity,
+      COUNT(DISTINCT product_description) as total_products,
+      SUM(fob_value) as total_value,
+      COUNT(DISTINCT exporter_name) as exporters,
+      COUNT(DISTINCT consignee_name) as consignees
+    FROM exports 
+    WHERE ${whereClause}
+    GROUP BY group_by
+    ORDER BY total_value DESC
+  `, [countryList.length, exporterList.length, ...params]);
+  
+  // Get detailed data
+  const details = all(`
+    SELECT 
+      declaration_id as "Declaration ID",
+      shipment_date as "Shipment Date",
+      exporter_name as "Exporter",
+      consignee_name as "Consignee",
+      product_description as "Product",
+      hs_code as "HS Code",
+      quantity as "Quantity",
+      unit as "Unit",
+      fob_value as "FOB Value (USD)",
+      ROUND(fob_value * 83.5, 2) as "FOB Value (INR)",
+      country_of_destination as "Country",
+      port_of_loading as "Port of Loading",
+      port_of_discharge as "Port of Discharge",
+      data_type as "Category"
+    FROM exports 
+    WHERE ${whereClause}
+    ORDER BY shipment_date DESC, total_value DESC
+  `, params);
+  
+  res.json({ summary, details, filters: { countries: countryList, exporters: exporterList, consignees: consigneeList } });
+});
+
+// Export custom report to Excel
+app.get('/api/export/custom-report', (req, res) => {
+  const { countries, exporters, consignees, month } = req.query;
+  
+  const countryList = countries ? countries.split(',').map(c => c.trim().toUpperCase()).filter(c => c) : [];
+  const exporterList = exporters ? exporters.split(',').map(e => e.trim().toUpperCase()).filter(e => e) : [];
+  const consigneeList = consignees ? consignees.split(',').map(c => c.trim().toUpperCase()).filter(c => c) : [];
+  
+  if (countryList.length === 0 && exporterList.length === 0 && consigneeList.length === 0) {
+    return res.status(400).json({ error: 'Please provide at least one country, exporter, or consignee' });
+  }
+  
+  // Build query conditions
+  const conditions = [];
+  const params = [];
+  
+  if (countryList.length > 0) {
+    const placeholders = countryList.map(() => 'UPPER(country_of_destination) LIKE ?').join(' OR ');
+    conditions.push(`(${placeholders})`);
+    countryList.forEach(c => params.push(`%${c}%`));
+  }
+  
+  if (exporterList.length > 0) {
+    const placeholders = exporterList.map(() => 'UPPER(exporter_name) LIKE ?').join(' OR ');
+    conditions.push(`(${placeholders})`);
+    exporterList.forEach(e => params.push(`%${e}%`));
+  }
+  
+  if (consigneeList.length > 0) {
+    const placeholders = consigneeList.map(() => 'UPPER(consignee_name) LIKE ?').join(' OR ');
+    conditions.push(`(${placeholders})`);
+    consigneeList.forEach(c => params.push(`%${c}%`));
+  }
+  
+  let whereClause = conditions.join(' AND ');
+  if (month) {
+    whereClause += ' AND month_year = ?';
+    params.push(month);
+  }
+  
+  // Get summary data grouped appropriately
+  const summaryParams = [countryList.length, exporterList.length, ...params];
+  const summary = all(`
+    SELECT 
+      CASE 
+        WHEN ? > 0 THEN country_of_destination
+        WHEN ? > 0 THEN exporter_name  
+        ELSE consignee_name
+      END as "Entity",
+      COUNT(DISTINCT declaration_id) as "Total Shipments",
+      ROUND(SUM(quantity), 2) as "Total Quantity",
+      COUNT(DISTINCT product_description) as "Total Products",
+      ROUND(SUM(fob_value), 2) as "Total Value (USD)",
+      ROUND(SUM(fob_value) * 83.5, 2) as "Total Value (INR)"
+    FROM exports 
+    WHERE ${whereClause}
+    GROUP BY "Entity"
+    ORDER BY "Total Value (USD)" DESC
+  `, summaryParams);
+  
+  // Get detailed data
+  const details = all(`
+    SELECT 
+      declaration_id as "Declaration ID",
+      shipment_date as "Shipment Date",
+      exporter_name as "Exporter",
+      consignee_name as "Consignee",
+      product_description as "Product",
+      hs_code as "HS Code",
+      quantity as "Quantity",
+      unit as "Unit",
+      fob_value as "FOB Value (USD)",
+      ROUND(fob_value * 83.5, 2) as "FOB Value (INR)",
+      country_of_destination as "Country",
+      port_of_loading as "Port of Loading",
+      port_of_discharge as "Port of Discharge",
+      data_type as "Category"
+    FROM exports 
+    WHERE ${whereClause}
+    ORDER BY shipment_date DESC
+  `, params);
+  
+  // Create workbook with multiple sheets
+  const wb = XLSX.utils.book_new();
+  
+  // Summary sheet
+  const summaryWs = XLSX.utils.json_to_sheet(summary);
+  XLSX.utils.book_append_sheet(wb, summaryWs, 'Summary');
+  
+  // Detailed data sheet
+  const detailsWs = XLSX.utils.json_to_sheet(details);
+  XLSX.utils.book_append_sheet(wb, detailsWs, 'Detailed Data');
+  
+  const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  
+  const filename = `custom_report_${month || 'all'}_${Date.now()}.xlsx`;
+  res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.send(buffer);
+});
+
+// Export intelligence prospective clients to Excel
+app.get('/api/export/prospective-clients', (req, res) => {
+  const company = get('SELECT company_name FROM company_info LIMIT 1');
+  const companyName = company?.company_name || 'AGNA';
+  
+  // Get products that the company exports
+  const companyProducts = all(`
+    SELECT DISTINCT 
+      hs_code,
+      product_description,
+      data_type
+    FROM exports 
+    WHERE UPPER(exporter_name) LIKE ?
+  `, [`%${companyName}%`]);
+
+  if (companyProducts.length === 0) {
+    return res.status(400).json({ error: 'No products found for your company' });
+  }
+
+  const hsCodeList = companyProducts.map(p => p.hs_code).filter(h => h);
+  
+  if (hsCodeList.length === 0) {
+    return res.status(400).json({ error: 'No HS codes found for company products' });
+  }
+
+  const placeholders = hsCodeList.map(() => '?').join(',');
+  
+  // Find prospective clients with detailed info
+  const prospectiveClients = all(`
+    SELECT 
+      consignee_name as "Consignee Name",
+      country_of_destination as "Country",
+      COUNT(DISTINCT declaration_id) as "Total Shipments",
+      SUM(fob_value) as "Total FOB (USD)",
+      ROUND(SUM(fob_value) * 83.5, 2) as "Total FOB (INR)",
+      SUM(quantity) as "Total Quantity",
+      GROUP_CONCAT(DISTINCT hs_code) as "HS Codes",
+      GROUP_CONCAT(DISTINCT product_description) as "Products",
+      GROUP_CONCAT(DISTINCT exporter_name) as "Current Suppliers"
+    FROM exports 
+    WHERE hs_code IN (${placeholders})
+    AND UPPER(exporter_name) NOT LIKE ?
+    AND consignee_name IS NOT NULL 
+    AND consignee_name != ''
+    AND UPPER(consignee_name) != 'NULL'
+    GROUP BY consignee_name, country_of_destination
+    HAVING "Total Shipments" >= 2
+    ORDER BY "Total FOB (USD)" DESC
+  `, [...hsCodeList, `%${companyName}%`]);
+  
+  // Get product-wise breakdown for each prospective client
+  const productBreakdown = all(`
+    SELECT 
+      consignee_name as "Consignee",
+      product_description as "Product",
+      hs_code as "HS Code",
+      COUNT(DISTINCT declaration_id) as "Shipments",
+      SUM(fob_value) as "FOB (USD)",
+      ROUND(SUM(fob_value) * 83.5, 2) as "FOB (INR)",
+      SUM(quantity) as "Quantity",
+      unit as "Unit",
+      exporter_name as "Current Supplier"
+    FROM exports 
+    WHERE hs_code IN (${placeholders})
+    AND UPPER(exporter_name) NOT LIKE ?
+    AND consignee_name IS NOT NULL 
+    AND consignee_name != ''
+    GROUP BY consignee_name, product_description, hs_code, exporter_name, unit
+    ORDER BY "FOB (USD)" DESC
+  `, [...hsCodeList, `%${companyName}%`]);
+  
+  // Create workbook with multiple sheets
+  const wb = XLSX.utils.book_new();
+  
+  // Summary sheet
+  const summaryWs = XLSX.utils.json_to_sheet(prospectiveClients);
+  XLSX.utils.book_append_sheet(wb, summaryWs, 'Prospective Clients');
+  
+  // Product breakdown sheet
+  const productWs = XLSX.utils.json_to_sheet(productBreakdown);
+  XLSX.utils.book_append_sheet(wb, productWs, 'Product Details');
+  
+  // Company products sheet (for reference)
+  const companyProductsWs = XLSX.utils.json_to_sheet(companyProducts.map(p => ({
+    "HS Code": p.hs_code,
+    "Product": p.product_description,
+    "Category": p.data_type
+  })));
+  XLSX.utils.book_append_sheet(wb, companyProductsWs, 'Your Products');
+  
+  const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  
+  res.setHeader('Content-Disposition', `attachment; filename=prospective_clients_${Date.now()}.xlsx`);
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.send(buffer);
+});
+
+// Export cross-sell opportunities to Excel
+app.get('/api/export/cross-sell', (req, res) => {
+  const company = get('SELECT company_name FROM company_info LIMIT 1');
+  const companyName = company?.company_name || 'AGNA';
+  
+  // Get clients that buy from this company
+  const companyClients = all(`
+    SELECT DISTINCT consignee_name
+    FROM exports 
+    WHERE UPPER(exporter_name) LIKE ?
+    AND consignee_name IS NOT NULL 
+    AND consignee_name != ''
+    AND UPPER(consignee_name) != 'NULL'
+  `, [`%${companyName}%`]);
+
+  if (companyClients.length === 0) {
+    return res.status(400).json({ error: 'No clients found for your company' });
+  }
+
+  const clientNames = companyClients.map(c => c.consignee_name);
+  const clientPlaceholders = clientNames.map(() => '?').join(',');
+  
+  // Get what company sells to these clients (HS codes)
+  const companyHsCodes = all(`
+    SELECT DISTINCT hs_code
+    FROM exports 
+    WHERE UPPER(exporter_name) LIKE ?
+    AND UPPER(consignee_name) IN (${clientPlaceholders})
+  `, [`%${companyName}%`, ...clientNames.map(n => n.toUpperCase())]);
+  
+  const companyHsCodeList = companyHsCodes.map(h => h.hs_code).filter(h => h);
+  
+  let crossSellData = [];
+  
+  if (companyHsCodeList.length > 0) {
+    const hsPlaceholders = companyHsCodeList.map(() => '?').join(',');
+    
+    crossSellData = all(`
+      SELECT 
+        e.consignee_name as "Your Client",
+        e.country_of_destination as "Country",
+        e.hs_code as "HS Code",
+        e.product_description as "Product",
+        e.exporter_name as "Competitor",
+        COUNT(DISTINCT e.declaration_id) as "Shipments",
+        SUM(e.fob_value) as "Total FOB (USD)",
+        ROUND(SUM(e.fob_value) * 83.5, 2) as "Total FOB (INR)",
+        SUM(e.quantity) as "Total Quantity",
+        e.unit as "Unit"
+      FROM exports e
+      WHERE UPPER(e.consignee_name) IN (${clientPlaceholders})
+      AND UPPER(e.exporter_name) NOT LIKE ?
+      AND e.hs_code NOT IN (${hsPlaceholders})
+      AND e.product_description IS NOT NULL
+      GROUP BY e.consignee_name, e.hs_code, e.product_description, e.exporter_name, e.country_of_destination, e.unit
+      ORDER BY "Total FOB (USD)" DESC
+    `, [...clientNames.map(n => n.toUpperCase()), `%${companyName}%`, ...companyHsCodeList]);
+  }
+  
+  // Create workbook
+  const wb = XLSX.utils.book_new();
+  
+  // Cross-sell opportunities sheet
+  const crossSellWs = XLSX.utils.json_to_sheet(crossSellData);
+  XLSX.utils.book_append_sheet(wb, crossSellWs, 'Cross-Sell Opportunities');
+  
+  // Your clients sheet
+  const clientsWs = XLSX.utils.json_to_sheet(clientNames.map(c => ({ "Client Name": c })));
+  XLSX.utils.book_append_sheet(wb, clientsWs, 'Your Clients');
+  
+  const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  
+  res.setHeader('Content-Disposition', `attachment; filename=cross_sell_opportunities_${Date.now()}.xlsx`);
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.send(buffer);
+});
+
+// Export entity details to Excel (for competitor/client detailed export)
+app.get('/api/export/entity-details', (req, res) => {
+  const { entity, type, month } = req.query;
+  
+  if (!entity || !type) {
+    return res.status(400).json({ error: 'Entity and type required' });
+  }
+
+  const field = type === 'exporter' ? 'exporter_name' : 'consignee_name';
+  const params = [entity.toUpperCase()];
+  let monthFilter = '';
+  if (month) {
+    monthFilter = ' AND month_year = ?';
+    params.push(month);
+  }
+
+  // Summary stats
+  const summary = get(`
+    SELECT 
+      COUNT(DISTINCT declaration_id) as total_shipments,
+      SUM(fob_value) as total_fob,
+      ROUND(SUM(fob_value) * 83.5, 2) as total_fob_inr,
+      SUM(quantity) as total_quantity,
+      COUNT(DISTINCT product_description) as unique_products,
+      COUNT(DISTINCT country_of_destination) as unique_countries,
+      MIN(shipment_date) as first_shipment,
+      MAX(shipment_date) as last_shipment
+    FROM exports 
+    WHERE UPPER(${field}) = ?${monthFilter}
+  `, params);
+
+  // Products breakdown
+  const products = all(`
+    SELECT 
+      product_description as "Product",
+      hs_code as "HS Code",
+      data_type as "Category",
+      COUNT(DISTINCT declaration_id) as "Shipments",
+      SUM(quantity) as "Quantity",
+      unit as "Unit",
+      SUM(fob_value) as "FOB (USD)",
+      ROUND(SUM(fob_value) * 83.5, 2) as "FOB (INR)"
+    FROM exports 
+    WHERE UPPER(${field}) = ?${monthFilter}
+    GROUP BY product_description, hs_code, data_type, unit
+    ORDER BY "FOB (USD)" DESC
+  `, params);
+
+  // Countries breakdown
+  const countries = all(`
+    SELECT 
+      country_of_destination as "Country",
+      COUNT(DISTINCT declaration_id) as "Shipments",
+      SUM(quantity) as "Quantity",
+      SUM(fob_value) as "FOB (USD)",
+      ROUND(SUM(fob_value) * 83.5, 2) as "FOB (INR)"
+    FROM exports 
+    WHERE UPPER(${field}) = ?${monthFilter}
+    GROUP BY country_of_destination
+    ORDER BY "FOB (USD)" DESC
+  `, params);
+
+  // All shipments
+  const shipments = all(`
+    SELECT 
+      declaration_id as "Declaration ID",
+      shipment_date as "Date",
+      exporter_name as "Exporter",
+      consignee_name as "Consignee",
+      product_description as "Product",
+      hs_code as "HS Code",
+      quantity as "Quantity",
+      unit as "Unit",
+      fob_value as "FOB (USD)",
+      ROUND(fob_value * 83.5, 2) as "FOB (INR)",
+      country_of_destination as "Country",
+      port_of_loading as "Port of Loading",
+      port_of_discharge as "Port of Discharge"
+    FROM exports 
+    WHERE UPPER(${field}) = ?${monthFilter}
+    ORDER BY shipment_date DESC
+  `, params);
+
+  // Create workbook
+  const wb = XLSX.utils.book_new();
+  
+  // Summary sheet
+  const summaryData = [{
+    "Entity": entity,
+    "Type": type === 'exporter' ? 'Competitor' : 'Client',
+    "Total Shipments": summary?.total_shipments || 0,
+    "Total FOB (USD)": summary?.total_fob || 0,
+    "Total FOB (INR)": summary?.total_fob_inr || 0,
+    "Total Quantity": summary?.total_quantity || 0,
+    "Unique Products": summary?.unique_products || 0,
+    "Unique Countries": summary?.unique_countries || 0,
+    "First Shipment": summary?.first_shipment || 'N/A',
+    "Last Shipment": summary?.last_shipment || 'N/A'
+  }];
+  const summaryWs = XLSX.utils.json_to_sheet(summaryData);
+  XLSX.utils.book_append_sheet(wb, summaryWs, 'Summary');
+  
+  // Products sheet
+  const productsWs = XLSX.utils.json_to_sheet(products);
+  XLSX.utils.book_append_sheet(wb, productsWs, 'Products');
+  
+  // Countries sheet
+  const countriesWs = XLSX.utils.json_to_sheet(countries);
+  XLSX.utils.book_append_sheet(wb, countriesWs, 'Countries');
+  
+  // All shipments sheet
+  const shipmentsWs = XLSX.utils.json_to_sheet(shipments);
+  XLSX.utils.book_append_sheet(wb, shipmentsWs, 'All Shipments');
+  
+  const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  
+  const safeEntity = entity.replace(/[^a-zA-Z0-9]/g, '_');
+  res.setHeader('Content-Disposition', `attachment; filename=${safeEntity}_report_${month || 'all'}.xlsx`);
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.send(buffer);
+});
+
 // ============= EXPORT/REPORT ROUTES =============
 
 // Export competitor report
