@@ -201,7 +201,7 @@ async function initDb() {
   // Insert default company if not exists
   const companyExists = get('SELECT COUNT(*) as count FROM company_info');
   if (!companyExists || companyExists.count === 0) {
-    run('INSERT INTO company_info (company_name) VALUES (?)', ['AGNA']);
+    run('INSERT INTO company_info (company_name) VALUES (?)', ['AGNA ORG AGROVILLA INDIA PRIVATE LIMITED']);
   }
 
   saveDb();
@@ -1413,6 +1413,612 @@ app.get('/api/intelligence/cross-sell', (req, res) => {
     companyHsCodes: companyHsCodeList,
     crossSellOpportunities
   });
+});
+
+// ============= MONTHLY COMPARISON ROUTES =============
+
+// Get monthly comparison data
+app.get('/api/monthly-comparison', (req, res) => {
+  const { currentMonth, previousMonth } = req.query;
+  
+  if (!currentMonth || !previousMonth) {
+    return res.status(400).json({ error: 'Both currentMonth and previousMonth required' });
+  }
+  
+  const company = get('SELECT company_name FROM company_info LIMIT 1');
+  const companyName = company?.company_name || 'AGNA';
+  
+  // Competitor comparison (tracked competitors)
+  const competitors = all('SELECT name FROM competitors WHERE active = 1');
+  const competitorNames = competitors.map(c => c.name);
+  
+  let competitorComparison = [];
+  if (competitorNames.length > 0) {
+    const placeholders = competitorNames.map(() => '?').join(',');
+    
+    // Current month data
+    const currentCompData = all(`
+      SELECT 
+        exporter_name,
+        COUNT(DISTINCT declaration_id) as shipments,
+        SUM(fob_value) as total_fob,
+        SUM(quantity) as total_qty,
+        COUNT(DISTINCT product_description) as products,
+        COUNT(DISTINCT country_of_destination) as countries,
+        COUNT(DISTINCT consignee_name) as clients
+      FROM exports 
+      WHERE UPPER(exporter_name) IN (${placeholders}) AND month_year = ?
+      GROUP BY exporter_name
+    `, [...competitorNames, currentMonth]);
+    
+    // Previous month data
+    const prevCompData = all(`
+      SELECT 
+        exporter_name,
+        COUNT(DISTINCT declaration_id) as shipments,
+        SUM(fob_value) as total_fob,
+        SUM(quantity) as total_qty,
+        COUNT(DISTINCT product_description) as products,
+        COUNT(DISTINCT country_of_destination) as countries,
+        COUNT(DISTINCT consignee_name) as clients
+      FROM exports 
+      WHERE UPPER(exporter_name) IN (${placeholders}) AND month_year = ?
+      GROUP BY exporter_name
+    `, [...competitorNames, previousMonth]);
+    
+    const prevMap = {};
+    prevCompData.forEach(p => prevMap[p.exporter_name] = p);
+    
+    competitorComparison = currentCompData.map(curr => ({
+      name: curr.exporter_name,
+      current: curr,
+      previous: prevMap[curr.exporter_name] || null,
+      shipmentChange: prevMap[curr.exporter_name] 
+        ? ((curr.shipments - prevMap[curr.exporter_name].shipments) / prevMap[curr.exporter_name].shipments * 100).toFixed(1)
+        : null,
+      fobChange: prevMap[curr.exporter_name]
+        ? ((curr.total_fob - prevMap[curr.exporter_name].total_fob) / prevMap[curr.exporter_name].total_fob * 100).toFixed(1)
+        : null,
+      isNew: !prevMap[curr.exporter_name]
+    }));
+    
+    // Add competitors only in previous month (dropped)
+    prevCompData.forEach(prev => {
+      if (!currentCompData.find(c => c.exporter_name === prev.exporter_name)) {
+        competitorComparison.push({
+          name: prev.exporter_name,
+          current: null,
+          previous: prev,
+          shipmentChange: -100,
+          fobChange: -100,
+          isDropped: true
+        });
+      }
+    });
+  }
+  
+  // Client comparison (tracked clients)
+  const clients = all('SELECT name FROM clients WHERE active = 1');
+  const clientNames = clients.map(c => c.name);
+  
+  let clientComparison = [];
+  if (clientNames.length > 0) {
+    const placeholders = clientNames.map(() => '?').join(',');
+    
+    // Current month data
+    const currentClientData = all(`
+      SELECT 
+        consignee_name,
+        COUNT(DISTINCT declaration_id) as shipments,
+        SUM(fob_value) as total_fob,
+        SUM(quantity) as total_qty,
+        COUNT(DISTINCT product_description) as products,
+        COUNT(DISTINCT exporter_name) as suppliers
+      FROM exports 
+      WHERE UPPER(consignee_name) IN (${placeholders}) AND month_year = ?
+      GROUP BY consignee_name
+    `, [...clientNames, currentMonth]);
+    
+    // Previous month data
+    const prevClientData = all(`
+      SELECT 
+        consignee_name,
+        COUNT(DISTINCT declaration_id) as shipments,
+        SUM(fob_value) as total_fob,
+        SUM(quantity) as total_qty,
+        COUNT(DISTINCT product_description) as products,
+        COUNT(DISTINCT exporter_name) as suppliers
+      FROM exports 
+      WHERE UPPER(consignee_name) IN (${placeholders}) AND month_year = ?
+      GROUP BY consignee_name
+    `, [...clientNames, previousMonth]);
+    
+    const prevMap = {};
+    prevClientData.forEach(p => prevMap[p.consignee_name] = p);
+    
+    clientComparison = currentClientData.map(curr => ({
+      name: curr.consignee_name,
+      current: curr,
+      previous: prevMap[curr.consignee_name] || null,
+      shipmentChange: prevMap[curr.consignee_name]
+        ? ((curr.shipments - prevMap[curr.consignee_name].shipments) / prevMap[curr.consignee_name].shipments * 100).toFixed(1)
+        : null,
+      fobChange: prevMap[curr.consignee_name]
+        ? ((curr.total_fob - prevMap[curr.consignee_name].total_fob) / prevMap[curr.consignee_name].total_fob * 100).toFixed(1)
+        : null,
+      isNew: !prevMap[curr.consignee_name]
+    }));
+  }
+  
+  // New suppliers to our clients this month (competitors entering our client base)
+  let newSuppliersToClients = [];
+  if (clientNames.length > 0) {
+    const placeholders = clientNames.map(() => '?').join(',');
+    
+    // Suppliers in current month
+    const currentSuppliers = all(`
+      SELECT DISTINCT consignee_name, exporter_name
+      FROM exports 
+      WHERE UPPER(consignee_name) IN (${placeholders}) AND month_year = ?
+    `, [...clientNames, currentMonth]);
+    
+    // Suppliers in previous month
+    const prevSuppliers = all(`
+      SELECT DISTINCT consignee_name, exporter_name
+      FROM exports 
+      WHERE UPPER(consignee_name) IN (${placeholders}) AND month_year = ?
+    `, [...clientNames, previousMonth]);
+    
+    const prevSet = new Set(prevSuppliers.map(p => `${p.consignee_name}|${p.exporter_name}`));
+    
+    const newEntries = currentSuppliers.filter(c => 
+      !prevSet.has(`${c.consignee_name}|${c.exporter_name}`)
+    );
+    
+    // Get details for new supplier-client relationships
+    if (newEntries.length > 0) {
+      const newConditions = newEntries.map(() => '(UPPER(consignee_name) = ? AND UPPER(exporter_name) = ?)').join(' OR ');
+      const newParams = [];
+      newEntries.forEach(e => {
+        newParams.push(e.consignee_name.toUpperCase(), e.exporter_name.toUpperCase());
+      });
+      
+      newSuppliersToClients = all(`
+        SELECT 
+          consignee_name as client,
+          exporter_name as new_supplier,
+          COUNT(DISTINCT declaration_id) as shipments,
+          SUM(fob_value) as total_fob,
+          GROUP_CONCAT(DISTINCT product_description) as products
+        FROM exports 
+        WHERE (${newConditions}) AND month_year = ?
+        GROUP BY consignee_name, exporter_name
+        ORDER BY total_fob DESC
+        LIMIT 50
+      `, [...newParams, currentMonth]);
+    }
+  }
+  
+  // Clients buying from new suppliers (any new supplier relationships)
+  const clientsNewSuppliers = all(`
+    SELECT 
+      curr.consignee_name as client,
+      curr.exporter_name as new_supplier,
+      COUNT(DISTINCT curr.declaration_id) as shipments,
+      SUM(curr.fob_value) as total_fob,
+      GROUP_CONCAT(DISTINCT curr.product_description) as products
+    FROM exports curr
+    LEFT JOIN (
+      SELECT DISTINCT consignee_name, exporter_name 
+      FROM exports 
+      WHERE month_year = ?
+    ) prev ON curr.consignee_name = prev.consignee_name AND curr.exporter_name = prev.exporter_name
+    WHERE curr.month_year = ? 
+    AND prev.exporter_name IS NULL
+    AND curr.consignee_name IS NOT NULL
+    AND curr.exporter_name IS NOT NULL
+    GROUP BY curr.consignee_name, curr.exporter_name
+    ORDER BY total_fob DESC
+    LIMIT 100
+  `, [previousMonth, currentMonth]);
+  
+  res.json({
+    currentMonth,
+    previousMonth,
+    companyName,
+    competitorComparison,
+    clientComparison,
+    newSuppliersToClients,
+    clientsNewSuppliers
+  });
+});
+
+// Get detailed monthly comparison for an entity
+app.get('/api/monthly-comparison/details', (req, res) => {
+  const { entity, type, currentMonth, previousMonth } = req.query;
+  
+  if (!entity || !type || !currentMonth || !previousMonth) {
+    return res.status(400).json({ error: 'entity, type, currentMonth, and previousMonth required' });
+  }
+  
+  const field = type === 'competitor' ? 'exporter_name' : 'consignee_name';
+  
+  // Current month details
+  const currentData = all(`
+    SELECT 
+      declaration_id,
+      shipment_date,
+      exporter_name,
+      consignee_name,
+      product_description,
+      hs_code,
+      quantity,
+      unit,
+      fob_value,
+      country_of_destination,
+      port_of_loading,
+      port_of_discharge
+    FROM exports 
+    WHERE UPPER(${field}) = ? AND month_year = ?
+    ORDER BY shipment_date DESC
+  `, [entity.toUpperCase(), currentMonth]);
+  
+  // Previous month details
+  const previousData = all(`
+    SELECT 
+      declaration_id,
+      shipment_date,
+      exporter_name,
+      consignee_name,
+      product_description,
+      hs_code,
+      quantity,
+      unit,
+      fob_value,
+      country_of_destination,
+      port_of_loading,
+      port_of_discharge
+    FROM exports 
+    WHERE UPPER(${field}) = ? AND month_year = ?
+    ORDER BY shipment_date DESC
+  `, [entity.toUpperCase(), previousMonth]);
+  
+  // Product comparison
+  const currentProducts = all(`
+    SELECT product_description, hs_code, SUM(quantity) as qty, SUM(fob_value) as fob
+    FROM exports WHERE UPPER(${field}) = ? AND month_year = ?
+    GROUP BY product_description, hs_code ORDER BY fob DESC
+  `, [entity.toUpperCase(), currentMonth]);
+  
+  const prevProducts = all(`
+    SELECT product_description, hs_code, SUM(quantity) as qty, SUM(fob_value) as fob
+    FROM exports WHERE UPPER(${field}) = ? AND month_year = ?
+    GROUP BY product_description, hs_code ORDER BY fob DESC
+  `, [entity.toUpperCase(), previousMonth]);
+  
+  // Country comparison
+  const currentCountries = all(`
+    SELECT country_of_destination, COUNT(DISTINCT declaration_id) as shipments, SUM(fob_value) as fob
+    FROM exports WHERE UPPER(${field}) = ? AND month_year = ?
+    GROUP BY country_of_destination ORDER BY fob DESC
+  `, [entity.toUpperCase(), currentMonth]);
+  
+  const prevCountries = all(`
+    SELECT country_of_destination, COUNT(DISTINCT declaration_id) as shipments, SUM(fob_value) as fob
+    FROM exports WHERE UPPER(${field}) = ? AND month_year = ?
+    GROUP BY country_of_destination ORDER BY fob DESC
+  `, [entity.toUpperCase(), previousMonth]);
+  
+  res.json({
+    entity,
+    type,
+    currentMonth,
+    previousMonth,
+    currentData,
+    previousData,
+    currentProducts,
+    prevProducts,
+    currentCountries,
+    prevCountries
+  });
+});
+
+// ============= BENCHMARKING ROUTES =============
+
+// Get company benchmarking data
+app.get('/api/benchmarking', (req, res) => {
+  const { month } = req.query;
+  
+  const company = get('SELECT company_name FROM company_info LIMIT 1');
+  const companyName = company?.company_name || 'AGNA';
+  
+  const monthFilter = month ? 'AND month_year = ?' : '';
+  const monthParam = month ? [month] : [];
+  
+  // Company data
+  const companyData = get(`
+    SELECT 
+      COUNT(DISTINCT declaration_id) as shipments,
+      SUM(fob_value) as total_fob,
+      SUM(quantity) as total_qty,
+      COUNT(DISTINCT product_description) as products,
+      COUNT(DISTINCT country_of_destination) as countries,
+      COUNT(DISTINCT consignee_name) as clients,
+      AVG(fob_value) as avg_fob_per_shipment
+    FROM exports 
+    WHERE UPPER(exporter_name) LIKE ? ${monthFilter}
+  `, [`%${companyName}%`, ...monthParam]);
+  
+  // All competitors data
+  const competitors = all('SELECT name FROM competitors WHERE active = 1');
+  const competitorNames = competitors.map(c => c.name);
+  
+  let competitorBenchmark = [];
+  if (competitorNames.length > 0) {
+    const placeholders = competitorNames.map(() => '?').join(',');
+    competitorBenchmark = all(`
+      SELECT 
+        exporter_name as name,
+        COUNT(DISTINCT declaration_id) as shipments,
+        SUM(fob_value) as total_fob,
+        SUM(quantity) as total_qty,
+        COUNT(DISTINCT product_description) as products,
+        COUNT(DISTINCT country_of_destination) as countries,
+        COUNT(DISTINCT consignee_name) as clients,
+        AVG(fob_value) as avg_fob_per_shipment
+      FROM exports 
+      WHERE UPPER(exporter_name) IN (${placeholders}) ${monthFilter}
+      GROUP BY exporter_name
+      ORDER BY total_fob DESC
+    `, [...competitorNames, ...monthParam]);
+  }
+  
+  // Market totals (all exporters)
+  const marketTotals = get(`
+    SELECT 
+      COUNT(DISTINCT declaration_id) as shipments,
+      SUM(fob_value) as total_fob,
+      COUNT(DISTINCT exporter_name) as exporters
+    FROM exports 
+    WHERE 1=1 ${monthFilter}
+  `, monthParam);
+  
+  // Company's clients and their other vendors
+  const companyClients = all(`
+    SELECT DISTINCT consignee_name
+    FROM exports 
+    WHERE UPPER(exporter_name) LIKE ? ${monthFilter}
+    AND consignee_name IS NOT NULL AND consignee_name != ''
+  `, [`%${companyName}%`, ...monthParam]);
+  
+  let clientVendorAnalysis = [];
+  if (companyClients.length > 0) {
+    const clientNames = companyClients.map(c => c.consignee_name);
+    const placeholders = clientNames.map(() => '?').join(',');
+    
+    // For each client, get all their suppliers and how they compare
+    clientVendorAnalysis = all(`
+      SELECT 
+        consignee_name as client,
+        exporter_name as vendor,
+        CASE WHEN UPPER(exporter_name) LIKE ? THEN 1 ELSE 0 END as is_your_company,
+        COUNT(DISTINCT declaration_id) as shipments,
+        SUM(fob_value) as total_fob,
+        SUM(quantity) as total_qty,
+        COUNT(DISTINCT product_description) as products
+      FROM exports 
+      WHERE UPPER(consignee_name) IN (${placeholders}) ${monthFilter}
+      GROUP BY consignee_name, exporter_name
+      ORDER BY consignee_name, total_fob DESC
+    `, [`%${companyName}%`, ...clientNames.map(c => c.toUpperCase()), ...monthParam]);
+  }
+  
+  // Calculate market share
+  const companyMarketShare = marketTotals?.total_fob > 0 
+    ? ((companyData?.total_fob || 0) / marketTotals.total_fob * 100).toFixed(2)
+    : 0;
+  
+  // Company ranking among all exporters
+  const companyRank = get(`
+    SELECT COUNT(*) + 1 as rank
+    FROM (
+      SELECT exporter_name, SUM(fob_value) as total_fob
+      FROM exports 
+      WHERE 1=1 ${monthFilter}
+      GROUP BY exporter_name
+      HAVING total_fob > (
+        SELECT COALESCE(SUM(fob_value), 0)
+        FROM exports 
+        WHERE UPPER(exporter_name) LIKE ? ${monthFilter}
+      )
+    )
+  `, [...monthParam, `%${companyName}%`, ...monthParam]);
+  
+  res.json({
+    companyName,
+    month: month || 'All Time',
+    companyData: companyData || {},
+    competitorBenchmark,
+    marketTotals: marketTotals || {},
+    companyMarketShare,
+    companyRank: companyRank?.rank || 'N/A',
+    clientVendorAnalysis
+  });
+});
+
+// Export benchmarking to Excel
+app.get('/api/export/benchmarking', (req, res) => {
+  const { month } = req.query;
+  
+  const company = get('SELECT company_name FROM company_info LIMIT 1');
+  const companyName = company?.company_name || 'AGNA';
+  
+  const monthFilter = month ? 'AND month_year = ?' : '';
+  const monthParam = month ? [month] : [];
+  
+  // Company vs Competitors
+  const competitors = all('SELECT name FROM competitors WHERE active = 1');
+  const allNames = [companyName, ...competitors.map(c => c.name)];
+  const placeholders = allNames.map(() => 'UPPER(exporter_name) LIKE ?').join(' OR ');
+  
+  const benchmark = all(`
+    SELECT 
+      exporter_name as "Company",
+      CASE WHEN UPPER(exporter_name) LIKE ? THEN 'Your Company' ELSE 'Competitor' END as "Type",
+      COUNT(DISTINCT declaration_id) as "Shipments",
+      SUM(fob_value) as "Total FOB (USD)",
+      ROUND(SUM(fob_value) * 83.5, 2) as "Total FOB (INR)",
+      SUM(quantity) as "Total Quantity",
+      COUNT(DISTINCT product_description) as "Products",
+      COUNT(DISTINCT country_of_destination) as "Countries",
+      COUNT(DISTINCT consignee_name) as "Clients"
+    FROM exports 
+    WHERE (${placeholders}) ${monthFilter}
+    GROUP BY exporter_name
+    ORDER BY "Total FOB (USD)" DESC
+  `, [`%${companyName}%`, ...allNames.map(n => `%${n}%`), ...monthParam]);
+  
+  // Client vendor analysis
+  const companyClients = all(`
+    SELECT DISTINCT consignee_name
+    FROM exports 
+    WHERE UPPER(exporter_name) LIKE ? ${monthFilter}
+    AND consignee_name IS NOT NULL AND consignee_name != ''
+  `, [`%${companyName}%`, ...monthParam]);
+  
+  let clientVendors = [];
+  if (companyClients.length > 0) {
+    const clientNames = companyClients.map(c => c.consignee_name);
+    const clientPlaceholders = clientNames.map(() => '?').join(',');
+    
+    clientVendors = all(`
+      SELECT 
+        consignee_name as "Client",
+        exporter_name as "Vendor",
+        CASE WHEN UPPER(exporter_name) LIKE ? THEN 'Your Company' ELSE 'Competitor' END as "Type",
+        COUNT(DISTINCT declaration_id) as "Shipments",
+        SUM(fob_value) as "FOB (USD)",
+        ROUND(SUM(fob_value) * 83.5, 2) as "FOB (INR)",
+        SUM(quantity) as "Quantity"
+      FROM exports 
+      WHERE UPPER(consignee_name) IN (${clientPlaceholders}) ${monthFilter}
+      GROUP BY consignee_name, exporter_name
+      ORDER BY consignee_name, "FOB (USD)" DESC
+    `, [`%${companyName}%`, ...clientNames.map(c => c.toUpperCase()), ...monthParam]);
+  }
+  
+  // Create workbook
+  const wb = XLSX.utils.book_new();
+  
+  const benchmarkWs = XLSX.utils.json_to_sheet(benchmark);
+  XLSX.utils.book_append_sheet(wb, benchmarkWs, 'Company vs Competitors');
+  
+  const clientVendorsWs = XLSX.utils.json_to_sheet(clientVendors);
+  XLSX.utils.book_append_sheet(wb, clientVendorsWs, 'Client Vendor Analysis');
+  
+  const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  
+  res.setHeader('Content-Disposition', `attachment; filename=benchmarking_report_${month || 'all'}.xlsx`);
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.send(buffer);
+});
+
+// Export monthly comparison to Excel
+app.get('/api/export/monthly-comparison', (req, res) => {
+  const { currentMonth, previousMonth } = req.query;
+  
+  if (!currentMonth || !previousMonth) {
+    return res.status(400).json({ error: 'Both months required' });
+  }
+  
+  const company = get('SELECT company_name FROM company_info LIMIT 1');
+  const companyName = company?.company_name || 'AGNA';
+  
+  // Get all comparison data
+  const competitors = all('SELECT name FROM competitors WHERE active = 1');
+  const competitorNames = competitors.map(c => c.name);
+  
+  let competitorData = [];
+  if (competitorNames.length > 0) {
+    const placeholders = competitorNames.map(() => '?').join(',');
+    
+    competitorData = all(`
+      SELECT 
+        exporter_name as "Competitor",
+        month_year as "Month",
+        COUNT(DISTINCT declaration_id) as "Shipments",
+        SUM(fob_value) as "FOB (USD)",
+        ROUND(SUM(fob_value) * 83.5, 2) as "FOB (INR)",
+        SUM(quantity) as "Quantity",
+        COUNT(DISTINCT product_description) as "Products"
+      FROM exports 
+      WHERE UPPER(exporter_name) IN (${placeholders}) 
+      AND month_year IN (?, ?)
+      GROUP BY exporter_name, month_year
+      ORDER BY exporter_name, month_year
+    `, [...competitorNames, currentMonth, previousMonth]);
+  }
+  
+  const clients = all('SELECT name FROM clients WHERE active = 1');
+  const clientNames = clients.map(c => c.name);
+  
+  let clientData = [];
+  if (clientNames.length > 0) {
+    const placeholders = clientNames.map(() => '?').join(',');
+    
+    clientData = all(`
+      SELECT 
+        consignee_name as "Client",
+        month_year as "Month",
+        COUNT(DISTINCT declaration_id) as "Shipments",
+        SUM(fob_value) as "FOB (USD)",
+        ROUND(SUM(fob_value) * 83.5, 2) as "FOB (INR)",
+        SUM(quantity) as "Quantity",
+        COUNT(DISTINCT exporter_name) as "Suppliers"
+      FROM exports 
+      WHERE UPPER(consignee_name) IN (${placeholders}) 
+      AND month_year IN (?, ?)
+      GROUP BY consignee_name, month_year
+      ORDER BY consignee_name, month_year
+    `, [...clientNames, currentMonth, previousMonth]);
+  }
+  
+  // New relationships
+  const newRelationships = all(`
+    SELECT 
+      curr.consignee_name as "Client",
+      curr.exporter_name as "New Supplier",
+      COUNT(DISTINCT curr.declaration_id) as "Shipments",
+      SUM(curr.fob_value) as "FOB (USD)",
+      ROUND(SUM(curr.fob_value) * 83.5, 2) as "FOB (INR)"
+    FROM exports curr
+    LEFT JOIN (
+      SELECT DISTINCT consignee_name, exporter_name 
+      FROM exports WHERE month_year = ?
+    ) prev ON curr.consignee_name = prev.consignee_name AND curr.exporter_name = prev.exporter_name
+    WHERE curr.month_year = ? AND prev.exporter_name IS NULL
+    GROUP BY curr.consignee_name, curr.exporter_name
+    ORDER BY "FOB (USD)" DESC
+    LIMIT 100
+  `, [previousMonth, currentMonth]);
+  
+  // Create workbook
+  const wb = XLSX.utils.book_new();
+  
+  const competitorWs = XLSX.utils.json_to_sheet(competitorData);
+  XLSX.utils.book_append_sheet(wb, competitorWs, 'Competitor Comparison');
+  
+  const clientWs = XLSX.utils.json_to_sheet(clientData);
+  XLSX.utils.book_append_sheet(wb, clientWs, 'Client Comparison');
+  
+  const newRelWs = XLSX.utils.json_to_sheet(newRelationships);
+  XLSX.utils.book_append_sheet(wb, newRelWs, 'New Supplier-Client');
+  
+  const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  
+  res.setHeader('Content-Disposition', `attachment; filename=monthly_comparison_${currentMonth}_vs_${previousMonth}.xlsx`);
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.send(buffer);
 });
 
 // ============= FEEDBACK ROUTES =============
