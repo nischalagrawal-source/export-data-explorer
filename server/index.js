@@ -41,8 +41,10 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-// Database setup
-const dbPath = path.join(__dirname, 'database.sqlite');
+// Database setup - Use volume path if available (for Railway persistence)
+const dataDir = process.env.DATA_DIR || __dirname;
+const dbPath = path.join(dataDir, 'database.sqlite');
+console.log('📁 Database path:', dbPath);
 let db;
 
 // Flag to control auto-save (disable during bulk imports)
