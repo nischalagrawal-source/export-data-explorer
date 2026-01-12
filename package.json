@@ -12,6 +12,7 @@
     "client": "cd client && npm run dev",
     "install:all": "npm install && cd client && npm install",
     "build": "cd client && npm run build",
+    "build:all": "cd client && npm install && npm run build",
     "build:prod": "npm install && cd client && npm install && npm run build",
     "start": "node server/index.js",
     "generate-sample": "node scripts/generate-sample-data.js"

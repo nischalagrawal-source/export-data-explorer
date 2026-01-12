@@ -13,8 +13,8 @@ import {
   MessageSquare, Send, Bug, Sparkles, HelpCircle, FileSearch, FilePlus2
 } from 'lucide-react';
 
-// API Base URL - uses environment variable in production, relative path in dev
-const API_BASE = import.meta.env.VITE_API_URL || '/api';
+// API Base URL - always use relative path (works on Vercel)
+const API_BASE = '/api';
 
 // USD to INR conversion rate (can be updated)
 const USD_TO_INR = 83.5;
