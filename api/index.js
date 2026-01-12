@@ -141,6 +141,152 @@ app.use(async (req, res, next) => {
   }
 });
 
+// Helper function to find column value with flexible matching
+const findColumnValue = (row, possibleNames) => {
+  const rowKeys = Object.keys(row);
+  const keyMap = {};
+  for (const key of rowKeys) {
+    const normalized = key.toLowerCase().replace(/[\s_-]+/g, '');
+    keyMap[normalized] = key;
+  }
+  
+  for (const name of possibleNames) {
+    if (row[name] !== undefined && row[name] !== null && String(row[name]).trim() !== '') {
+      return row[name];
+    }
+    const normalizedName = name.toLowerCase().replace(/[\s_-]+/g, '');
+    if (keyMap[normalizedName]) {
+      const val = row[keyMap[normalizedName]];
+      if (val !== undefined && val !== null && String(val).trim() !== '') return val;
+    }
+  }
+  
+  for (const name of possibleNames) {
+    const normalizedName = name.toLowerCase().replace(/[\s_-]+/g, '');
+    for (const [normalized, actualKey] of Object.entries(keyMap)) {
+      if (normalized.includes(normalizedName) || normalizedName.includes(normalized)) {
+        const val = row[actualKey];
+        if (val !== undefined && val !== null && String(val).trim() !== '') return val;
+      }
+    }
+  }
+  return '';
+};
+
+// ============= FILE UPLOAD ROUTE =============
+app.post('/api/upload', upload.single('file'), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'No file uploaded' });
+  }
+
+  const { dataType } = req.body;
+  if (!dataType || !['fruits', 'vegetables'].includes(dataType)) {
+    return res.status(400).json({ error: 'Invalid data type. Must be "fruits" or "vegetables"' });
+  }
+
+  try {
+    const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+    const sheetName = workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[sheetName];
+    const data = XLSX.utils.sheet_to_json(worksheet);
+
+    if (data.length === 0) {
+      return res.status(400).json({ error: 'Excel file is empty' });
+    }
+
+    const columns = Object.keys(data[0]);
+    const uploadBatch = `${Date.now()}-${dataType}`;
+    let inserted = 0, skipped = 0;
+
+    // Column name variations
+    const declarationIdNames = ['Declaration ID', 'DECLARATION_ID', 'Declaration No', 'SB No', 'Shipping Bill No', 'Bill No', 'Invoice No'];
+    const exporterNames = ['Exporter Name', 'EXPORTER_NAME', 'Exporter', 'Shipper', 'Seller', 'Company Name'];
+    const consigneeNames = ['Consignee Name', 'CONSIGNEE_NAME', 'Consignee', 'Buyer', 'Importer', 'Customer', 'Consinee Name'];
+    const productNames = ['Product Description', 'PRODUCT_DESCRIPTION', 'Product', 'Description', 'Goods Description', 'Item Description'];
+    const hsCodeNames = ['HS Code', 'HS_CODE', 'HSCode', 'ITC Code', 'Tariff Code'];
+    const quantityNames = ['Quantity', 'QUANTITY', 'Qty', 'Net Quantity', 'Weight'];
+    const unitNames = ['Unit', 'UNIT', 'UQC', 'UOM'];
+    const fobNames = ['FOB Value', 'FOB_VALUE', 'FOB', 'FOB USD', 'Fob Usd', 'Value', 'Amount'];
+    const currencyNames = ['Currency', 'CURRENCY'];
+    const portLoadingNames = ['Port of Loading', 'PORT_OF_LOADING', 'Indian Port', 'Loading Port', 'POL'];
+    const portDischargeNames = ['Port of Discharge', 'PORT_OF_DISCHARGE', 'Foreign Port', 'Discharge Port', 'POD'];
+    const countryNames = ['Country', 'COUNTRY', 'Destination Country', 'Country of Destination', 'Destination'];
+    const dateNames = ['Shipment Date', 'SHIPMENT_DATE', 'Date', 'SB Date', 'Bill Date', 'Export Date'];
+
+    for (const row of data) {
+      const declarationId = findColumnValue(row, declarationIdNames);
+      const exporterName = findColumnValue(row, exporterNames);
+      const consigneeName = findColumnValue(row, consigneeNames);
+      const productDesc = findColumnValue(row, productNames);
+      const hsCode = findColumnValue(row, hsCodeNames);
+      const quantity = parseFloat(findColumnValue(row, quantityNames) || 0);
+      const unit = findColumnValue(row, unitNames) || 'KGS';
+      const fobValue = parseFloat(String(findColumnValue(row, fobNames) || 0).replace(/[^0-9.-]/g, '')) || 0;
+      const fobCurrency = findColumnValue(row, currencyNames) || 'USD';
+      const portLoading = findColumnValue(row, portLoadingNames);
+      const portDischarge = findColumnValue(row, portDischargeNames);
+      const countryDest = findColumnValue(row, countryNames);
+      
+      // Parse date
+      let shipmentDate = null, monthYear = null;
+      const dateValue = findColumnValue(row, dateNames);
+      if (dateValue) {
+        if (typeof dateValue === 'number') {
+          const date = XLSX.SSF.parse_date_code(dateValue);
+          if (date) {
+            shipmentDate = `${date.y}-${String(date.m).padStart(2, '0')}-${String(date.d).padStart(2, '0')}`;
+            monthYear = `${date.y}-${String(date.m).padStart(2, '0')}`;
+          }
+        } else {
+          const dateStr = String(dateValue);
+          let parsed = new Date(dateStr);
+          if (isNaN(parsed)) {
+            const parts = dateStr.split(/[-\/]/);
+            if (parts.length === 3) parsed = new Date(parts[2], parts[1] - 1, parts[0]);
+          }
+          if (!isNaN(parsed) && parsed.getFullYear() > 1900) {
+            shipmentDate = parsed.toISOString().split('T')[0];
+            monthYear = `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, '0')}`;
+          }
+        }
+      }
+
+      let uniqueId = declarationId;
+      if (!uniqueId || uniqueId === '') {
+        const composite = `${exporterName}-${consigneeName}-${productDesc}-${dateValue}-${fobValue}`;
+        if (composite !== '----0') {
+          uniqueId = `AUTO-${Buffer.from(composite).toString('base64').slice(0, 20)}-${Math.random().toString(36).slice(2, 8)}`;
+        }
+      }
+
+      if (uniqueId && uniqueId !== '') {
+        try {
+          await run(`INSERT INTO exports (declaration_id, exporter_name, consignee_name, product_description,
+            product_category, data_type, hs_code, quantity, unit, fob_value, fob_currency, port_of_loading,
+            port_of_discharge, country_of_destination, shipment_date, month_year, upload_batch)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [uniqueId.toString().trim(), (exporterName || '').toString().trim().toUpperCase(),
+             (consigneeName || '').toString().trim().toUpperCase(), (productDesc || '').toString().trim(),
+             dataType, dataType, String(hsCode || '').trim(), quantity || 0, (unit || 'KGS').toString().trim(),
+             fobValue || 0, (fobCurrency || 'USD').toString().trim(), (portLoading || '').toString().trim(),
+             (portDischarge || '').toString().trim(), (countryDest || '').toString().trim(),
+             shipmentDate, monthYear, uploadBatch]);
+          inserted++;
+        } catch (e) {
+          skipped++;
+        }
+      } else {
+        skipped++;
+      }
+    }
+
+    res.json({ success: true, message: `Processed ${data.length} rows`, inserted, skipped, dataType, columnsFound: columns });
+  } catch (err) {
+    console.error('Upload error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ============= COMPETITORS ROUTES =============
 app.get('/api/competitors', async (req, res) => {
   const competitors = await all('SELECT * FROM competitors WHERE active = 1 ORDER BY name');
