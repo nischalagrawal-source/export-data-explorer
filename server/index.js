@@ -3,7 +3,7 @@ import cors from 'cors';
 import multer from 'multer';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import initSqlJs from 'sql.js';
+import { createClient } from '@libsql/client';
 import XLSX from 'xlsx';
 import fs from 'fs';
 
@@ -41,91 +41,56 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-// Database setup - Use volume path if available (for Railway persistence)
-const dataDir = process.env.DATA_DIR || __dirname;
-const dbPath = path.join(dataDir, 'database.sqlite');
-console.log('📁 Database path:', dbPath);
+// Database setup - Turso (cloud SQLite)
+// Set these environment variables:
+// TURSO_DATABASE_URL - Your Turso database URL
+// TURSO_AUTH_TOKEN - Your Turso auth token
+const dbUrl = process.env.TURSO_DATABASE_URL || 'file:local.db';
+const authToken = process.env.TURSO_AUTH_TOKEN;
+
+console.log('📁 Database URL:', dbUrl.includes('turso') ? 'Turso Cloud' : 'Local SQLite');
+
 let db;
 
-// Flag to control auto-save (disable during bulk imports)
-let autoSave = true;
-
-// Helper to run queries
-const run = (sql, params = []) => {
+// Helper to run queries (async)
+const run = async (sql, params = []) => {
   try {
-    if (params.length > 0) {
-      const stmt = db.prepare(sql);
-      stmt.bind(params);
-      stmt.step();
-      stmt.free();
-    } else {
-      db.run(sql);
-    }
-    if (autoSave) {
-      saveDb();
-    }
+    await db.execute({ sql, args: params });
   } catch (err) {
     throw err;
   }
 };
 
-const get = (sql, params = []) => {
+const get = async (sql, params = []) => {
   try {
-    const stmt = db.prepare(sql);
-    if (params.length > 0) {
-      stmt.bind(params);
-    }
-    if (stmt.step()) {
-      const result = stmt.getAsObject();
-      stmt.free();
-      return result;
-    }
-    stmt.free();
-    return null;
+    const result = await db.execute({ sql, args: params });
+    return result.rows.length > 0 ? result.rows[0] : null;
   } catch (err) {
     console.error('DB get error:', err.message);
     return null;
   }
 };
 
-const all = (sql, params = []) => {
+const all = async (sql, params = []) => {
   try {
-    const stmt = db.prepare(sql);
-    if (params.length > 0) {
-      stmt.bind(params);
-    }
-    const results = [];
-    while (stmt.step()) {
-      results.push(stmt.getAsObject());
-    }
-    stmt.free();
-    return results;
+    const result = await db.execute({ sql, args: params });
+    return result.rows;
   } catch (err) {
     console.error('DB all error:', err.message);
     return [];
   }
 };
 
-const saveDb = () => {
-  const data = db.export();
-  const buffer = Buffer.from(data);
-  fs.writeFileSync(dbPath, buffer);
-};
-
 // Initialize database
 async function initDb() {
-  const SQL = await initSqlJs();
-  
-  // Load existing database or create new
-  if (fs.existsSync(dbPath)) {
-    const buffer = fs.readFileSync(dbPath);
-    db = new SQL.Database(buffer);
-  } else {
-    db = new SQL.Database();
-  }
+  // Create Turso client
+  db = createClient({
+    url: dbUrl,
+    authToken: authToken
+  });
 
   // Initialize tables
-  db.run(`
+  await db.execute(`
     CREATE TABLE IF NOT EXISTS competitors (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT UNIQUE NOT NULL,
@@ -134,7 +99,7 @@ async function initDb() {
     )
   `);
 
-  db.run(`
+  await db.execute(`
     CREATE TABLE IF NOT EXISTS clients (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT UNIQUE NOT NULL,
@@ -143,7 +108,7 @@ async function initDb() {
     )
   `);
 
-  db.run(`
+  await db.execute(`
     CREATE TABLE IF NOT EXISTS exports (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       declaration_id TEXT NOT NULL,
@@ -168,12 +133,12 @@ async function initDb() {
   `);
   
   // Create unique index on declaration_id + shipment_date + product_description + data_type
-  db.run(`
+  await db.execute(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_exports_unique 
     ON exports(declaration_id, shipment_date, product_description, hs_code, quantity, fob_value)
   `);
 
-  db.run(`
+  await db.execute(`
     CREATE TABLE IF NOT EXISTS company_info (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       company_name TEXT NOT NULL DEFAULT 'AGNA',
@@ -182,14 +147,14 @@ async function initDb() {
   `);
 
   // Create indexes
-  db.run(`CREATE INDEX IF NOT EXISTS idx_exports_exporter ON exports(exporter_name)`);
-  db.run(`CREATE INDEX IF NOT EXISTS idx_exports_consignee ON exports(consignee_name)`);
-  db.run(`CREATE INDEX IF NOT EXISTS idx_exports_date ON exports(shipment_date)`);
-  db.run(`CREATE INDEX IF NOT EXISTS idx_exports_month ON exports(month_year)`);
-  db.run(`CREATE INDEX IF NOT EXISTS idx_exports_declaration ON exports(declaration_id)`);
+  await db.execute(`CREATE INDEX IF NOT EXISTS idx_exports_exporter ON exports(exporter_name)`);
+  await db.execute(`CREATE INDEX IF NOT EXISTS idx_exports_consignee ON exports(consignee_name)`);
+  await db.execute(`CREATE INDEX IF NOT EXISTS idx_exports_date ON exports(shipment_date)`);
+  await db.execute(`CREATE INDEX IF NOT EXISTS idx_exports_month ON exports(month_year)`);
+  await db.execute(`CREATE INDEX IF NOT EXISTS idx_exports_declaration ON exports(declaration_id)`);
 
   // Create feedback table
-  db.run(`
+  await db.execute(`
     CREATE TABLE IF NOT EXISTS feedback (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_name TEXT,
@@ -201,23 +166,22 @@ async function initDb() {
   `);
 
   // Insert default company if not exists
-  const companyExists = get('SELECT COUNT(*) as count FROM company_info');
+  const companyExists = await get('SELECT COUNT(*) as count FROM company_info');
   if (!companyExists || companyExists.count === 0) {
-    run('INSERT INTO company_info (company_name) VALUES (?)', ['AGNA ORG AGROVILLA INDIA PRIVATE LIMITED']);
+    await run('INSERT INTO company_info (company_name) VALUES (?)', ['AGNA ORG AGROVILLA INDIA PRIVATE LIMITED']);
   }
 
-  saveDb();
   console.log('📦 Database initialized');
 }
 
 // ============= COMPETITORS ROUTES =============
-app.get('/api/competitors', (req, res) => {
-  const competitors = all('SELECT * FROM competitors WHERE active = 1 ORDER BY name');
+app.get('/api/competitors', async (req, res) => {
+  const competitors = await all('SELECT * FROM competitors WHERE active = 1 ORDER BY name');
   res.json(competitors);
 });
 
 // Search for potential competitor matches in export data
-app.get('/api/competitors/search', (req, res) => {
+app.get('/api/competitors/search', async (req, res) => {
   const { q } = req.query;
   if (!q || q.length < 2) {
     return res.json([]);
@@ -243,10 +207,10 @@ app.get('/api/competitors/search', (req, res) => {
   query += ` GROUP BY exporter_name ORDER BY shipment_count DESC LIMIT 20`;
   
   const params = words.map(w => `%${w}%`);
-  const results = all(query, params);
+  const results = await all(query, params);
   
   // Also check if already tracked
-  const tracked = all('SELECT name FROM competitors WHERE active = 1');
+  const tracked = await all('SELECT name FROM competitors WHERE active = 1');
   const trackedNames = new Set(tracked.map(t => t.name));
   
   const enriched = results.map(r => ({
@@ -257,7 +221,7 @@ app.get('/api/competitors/search', (req, res) => {
   res.json(enriched);
 });
 
-app.post('/api/competitors', (req, res) => {
+app.post('/api/competitors', async (req, res) => {
   const { name, names } = req.body;
   
   // Support adding multiple names at once
@@ -268,9 +232,9 @@ app.post('/api/competitors', (req, res) => {
   for (const n of namesToAdd) {
     if (!n || !n.trim()) continue;
     try {
-      run('INSERT INTO competitors (name) VALUES (?)', [n.trim().toUpperCase()]);
-      const result = get('SELECT last_insert_rowid() as id');
-      added.push({ id: result.id, name: n.trim().toUpperCase() });
+      await run('INSERT INTO competitors (name) VALUES (?)', [n.trim().toUpperCase()]);
+      const result = await get('SELECT last_insert_rowid() as id');
+      added.push({ id: result?.id, name: n.trim().toUpperCase() });
     } catch (err) {
       if (err.message && err.message.includes('UNIQUE')) {
         errors.push({ name: n, error: 'Already exists' });
@@ -283,19 +247,19 @@ app.post('/api/competitors', (req, res) => {
   res.json({ added, errors });
 });
 
-app.delete('/api/competitors/:id', (req, res) => {
-  run('UPDATE competitors SET active = 0 WHERE id = ?', [parseInt(req.params.id)]);
+app.delete('/api/competitors/:id', async (req, res) => {
+  await run('UPDATE competitors SET active = 0 WHERE id = ?', [parseInt(req.params.id)]);
   res.json({ success: true });
 });
 
 // ============= CLIENTS ROUTES =============
-app.get('/api/clients', (req, res) => {
-  const clients = all('SELECT * FROM clients WHERE active = 1 ORDER BY name');
+app.get('/api/clients', async (req, res) => {
+  const clients = await all('SELECT * FROM clients WHERE active = 1 ORDER BY name');
   res.json(clients);
 });
 
 // Search for potential client matches in export data
-app.get('/api/clients/search', (req, res) => {
+app.get('/api/clients/search', async (req, res) => {
   const { q } = req.query;
   if (!q || q.length < 2) {
     return res.json([]);
@@ -322,10 +286,10 @@ app.get('/api/clients/search', (req, res) => {
   query += ` GROUP BY consignee_name ORDER BY shipment_count DESC LIMIT 20`;
   
   const params = words.map(w => `%${w}%`);
-  const results = all(query, params);
+  const results = await all(query, params);
   
   // Also check if already tracked
-  const tracked = all('SELECT name FROM clients WHERE active = 1');
+  const tracked = await all('SELECT name FROM clients WHERE active = 1');
   const trackedNames = new Set(tracked.map(t => t.name));
   
   const enriched = results.map(r => ({
@@ -336,7 +300,7 @@ app.get('/api/clients/search', (req, res) => {
   res.json(enriched);
 });
 
-app.post('/api/clients', (req, res) => {
+app.post('/api/clients', async (req, res) => {
   const { name, names } = req.body;
   
   // Support adding multiple names at once
@@ -347,9 +311,9 @@ app.post('/api/clients', (req, res) => {
   for (const n of namesToAdd) {
     if (!n || !n.trim()) continue;
     try {
-      run('INSERT INTO clients (name) VALUES (?)', [n.trim().toUpperCase()]);
-      const result = get('SELECT last_insert_rowid() as id');
-      added.push({ id: result.id, name: n.trim().toUpperCase() });
+      await run('INSERT INTO clients (name) VALUES (?)', [n.trim().toUpperCase()]);
+      const result = await get('SELECT last_insert_rowid() as id');
+      added.push({ id: result?.id, name: n.trim().toUpperCase() });
     } catch (err) {
       if (err.message && err.message.includes('UNIQUE')) {
         errors.push({ name: n, error: 'Already exists' });
@@ -362,20 +326,20 @@ app.post('/api/clients', (req, res) => {
   res.json({ added, errors });
 });
 
-app.delete('/api/clients/:id', (req, res) => {
-  run('UPDATE clients SET active = 0 WHERE id = ?', [parseInt(req.params.id)]);
+app.delete('/api/clients/:id', async (req, res) => {
+  await run('UPDATE clients SET active = 0 WHERE id = ?', [parseInt(req.params.id)]);
   res.json({ success: true });
 });
 
 // ============= COMPANY ROUTES =============
-app.get('/api/company', (req, res) => {
-  const company = get('SELECT * FROM company_info LIMIT 1');
+app.get('/api/company', async (req, res) => {
+  const company = await get('SELECT * FROM company_info LIMIT 1');
   res.json(company);
 });
 
-app.put('/api/company', (req, res) => {
+app.put('/api/company', async (req, res) => {
   const { company_name } = req.body;
-  run('UPDATE company_info SET company_name = ?', [company_name.trim().toUpperCase()]);
+  await run('UPDATE company_info SET company_name = ?', [company_name.trim().toUpperCase()]);
   res.json({ success: true });
 });
 
@@ -424,7 +388,7 @@ const findColumnValue = (row, possibleNames) => {
 };
 
 // ============= FILE UPLOAD ROUTE =============
-app.post('/api/upload', upload.single('file'), (req, res) => {
+app.post('/api/upload', upload.single('file'), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'No file uploaded' });
   }
@@ -567,8 +531,6 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
       progressCount++;
       if (progressCount % 5000 === 0) {
         console.log(`Progress: ${progressCount}/${totalRows} rows processed (${inserted} inserted, ${skipped} skipped)...`);
-        // Save periodically during bulk import
-        saveDb();
       }
       // Map Excel columns to database fields using flexible matching
       const declarationId = findColumnValue(row, declarationIdNames);
@@ -643,7 +605,7 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
       if (uniqueId && uniqueId !== '') {
         // Try to insert - let database handle duplicates via unique constraint
         try {
-          run(`
+          await run(`
             INSERT INTO exports (
               declaration_id, exporter_name, consignee_name, product_description,
               product_category, data_type, hs_code, quantity, unit, fob_value,
@@ -683,10 +645,6 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
         skipped++;
       }
     }
-
-    // Final save and re-enable auto-save
-    saveDb();
-    autoSave = true;
     
     console.log(`Import complete: ${inserted} inserted, ${skipped} skipped, ${noIdCount} no ID`);
 
@@ -712,8 +670,8 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
 // ============= ANALYTICS ROUTES =============
 
 // Get available months
-app.get('/api/analytics/months', (req, res) => {
-  const months = all(`
+app.get('/api/analytics/months', async (req, res) => {
+  const months = await all(`
     SELECT DISTINCT month_year FROM exports 
     WHERE month_year IS NOT NULL 
     ORDER BY month_year DESC
@@ -722,10 +680,10 @@ app.get('/api/analytics/months', (req, res) => {
 });
 
 // Competitor Analysis
-app.get('/api/analytics/competitors', (req, res) => {
+app.get('/api/analytics/competitors', async (req, res) => {
   const { month, compareMonth } = req.query;
   
-  const competitors = all('SELECT name FROM competitors WHERE active = 1');
+  const competitors = await all('SELECT name FROM competitors WHERE active = 1');
   const competitorNames = competitors.map(c => c.name);
 
   if (competitorNames.length === 0) {
@@ -757,7 +715,7 @@ app.get('/api/analytics/competitors', (req, res) => {
   
   query += ' GROUP BY exporter_name ORDER BY total_fob DESC';
   
-  const results = all(query, params);
+  const results = await all(query, params);
 
   // Get comparison data if compareMonth provided
   let comparison = [];
@@ -772,17 +730,17 @@ app.get('/api/analytics/competitors', (req, res) => {
       AND month_year = ?
       GROUP BY exporter_name
     `;
-    comparison = all(compQuery, [...competitorNames, compareMonth]);
+    comparison = await all(compQuery, [...competitorNames, compareMonth]);
   }
 
   res.json({ competitors: results, comparison });
 });
 
 // Client Analysis
-app.get('/api/analytics/clients', (req, res) => {
+app.get('/api/analytics/clients', async (req, res) => {
   const { month, compareMonth } = req.query;
   
-  const clients = all('SELECT name FROM clients WHERE active = 1');
+  const clients = await all('SELECT name FROM clients WHERE active = 1');
   const clientNames = clients.map(c => c.name);
 
   if (clientNames.length === 0) {
@@ -814,7 +772,7 @@ app.get('/api/analytics/clients', (req, res) => {
   
   query += ' GROUP BY consignee_name ORDER BY total_fob DESC';
   
-  const results = all(query, params);
+  const results = await all(query, params);
 
   // Get comparison data
   let comparison = [];
@@ -829,18 +787,18 @@ app.get('/api/analytics/clients', (req, res) => {
       AND month_year = ?
       GROUP BY consignee_name
     `;
-    comparison = all(compQuery, [...clientNames, compareMonth]);
+    comparison = await all(compQuery, [...clientNames, compareMonth]);
   }
 
   res.json({ clients: results, comparison });
 });
 
 // AGNA vs Competitors Analysis
-app.get('/api/analytics/company-comparison', (req, res) => {
+app.get('/api/analytics/company-comparison', async (req, res) => {
   const { month } = req.query;
   
-  const company = get('SELECT company_name FROM company_info LIMIT 1');
-  const competitors = all('SELECT name FROM competitors WHERE active = 1');
+  const company = await get('SELECT company_name FROM company_info LIMIT 1');
+  const competitors = await all('SELECT name FROM competitors WHERE active = 1');
   
   const companyName = company?.company_name || 'AGNA';
   const allNames = [companyName, ...competitors.map(c => c.name)];
@@ -869,7 +827,7 @@ app.get('/api/analytics/company-comparison', (req, res) => {
   
   query += ' GROUP BY exporter_name, data_type ORDER BY total_fob DESC';
   
-  const results = all(query, params);
+  const results = await all(query, params);
   
   // Aggregate by company
   const aggregated = {};
@@ -901,7 +859,7 @@ app.get('/api/analytics/company-comparison', (req, res) => {
 });
 
 // Detailed analysis for a specific competitor or client
-app.get('/api/analytics/entity-details', (req, res) => {
+app.get('/api/analytics/entity-details', async (req, res) => {
   const { entity, type, month } = req.query;
   
   if (!entity || !type) {
@@ -917,7 +875,7 @@ app.get('/api/analytics/entity-details', (req, res) => {
   }
 
   // Summary stats
-  const summary = get(`
+  const summary = await get(`
     SELECT 
       COUNT(DISTINCT declaration_id) as total_shipments,
       SUM(fob_value) as total_fob,
@@ -932,7 +890,7 @@ app.get('/api/analytics/entity-details', (req, res) => {
   `, params);
 
   // Products breakdown
-  const products = all(`
+  const products = await all(`
     SELECT 
       product_description,
       hs_code,
@@ -950,7 +908,7 @@ app.get('/api/analytics/entity-details', (req, res) => {
   `, params);
 
   // Countries breakdown
-  const countries = all(`
+  const countries = await all(`
     SELECT 
       country_of_destination,
       COUNT(DISTINCT declaration_id) as shipment_count,
@@ -963,7 +921,7 @@ app.get('/api/analytics/entity-details', (req, res) => {
   `, params);
 
   // Ports breakdown
-  const ports = all(`
+  const ports = await all(`
     SELECT 
       port_of_loading as indian_port,
       port_of_discharge as foreign_port,
@@ -977,7 +935,7 @@ app.get('/api/analytics/entity-details', (req, res) => {
   `, params);
 
   // Monthly trend for this entity
-  const monthlyTrend = all(`
+  const monthlyTrend = await all(`
     SELECT 
       month_year,
       COUNT(DISTINCT declaration_id) as shipment_count,
@@ -992,7 +950,7 @@ app.get('/api/analytics/entity-details', (req, res) => {
   // If it's a client, also get their suppliers
   let suppliers = [];
   if (type === 'consignee') {
-    suppliers = all(`
+    suppliers = await all(`
       SELECT 
         exporter_name,
         COUNT(DISTINCT declaration_id) as shipment_count,
@@ -1009,7 +967,7 @@ app.get('/api/analytics/entity-details', (req, res) => {
   // If it's an exporter, get their clients
   let clients = [];
   if (type === 'exporter') {
-    clients = all(`
+    clients = await all(`
       SELECT 
         consignee_name,
         country_of_destination,
@@ -1024,7 +982,7 @@ app.get('/api/analytics/entity-details', (req, res) => {
   }
 
   // Recent shipments with dates
-  const recentShipments = all(`
+  const recentShipments = await all(`
     SELECT 
       declaration_id,
       shipment_date,
@@ -1058,7 +1016,7 @@ app.get('/api/analytics/entity-details', (req, res) => {
 });
 
 // Detailed shipments for a specific entity
-app.get('/api/analytics/shipments', (req, res) => {
+app.get('/api/analytics/shipments', async (req, res) => {
   const { entity, type, month, page = 1, limit = 50 } = req.query;
   
   if (!entity || !type) {
@@ -1082,7 +1040,7 @@ app.get('/api/analytics/shipments', (req, res) => {
   query += ` ORDER BY shipment_date DESC LIMIT ? OFFSET ?`;
   params.push(parseInt(limit), offset);
   
-  const shipments = all(query, params);
+  const shipments = await all(query, params);
   
   // Get total count
   let countQuery = `SELECT COUNT(*) as total FROM exports WHERE UPPER(${field}) = ?`;
@@ -1091,13 +1049,13 @@ app.get('/api/analytics/shipments', (req, res) => {
     countQuery += ' AND month_year = ?';
     countParams.push(month);
   }
-  const total = get(countQuery, countParams);
+  const total = await get(countQuery, countParams);
 
   res.json({ shipments, total: total?.total || 0, page: parseInt(page), limit: parseInt(limit) });
 });
 
 // Product breakdown
-app.get('/api/analytics/products', (req, res) => {
+app.get('/api/analytics/products', async (req, res) => {
   const { entity, type, month } = req.query;
   
   const field = type === 'exporter' ? 'exporter_name' : 'consignee_name';
@@ -1131,12 +1089,12 @@ app.get('/api/analytics/products', (req, res) => {
   
   query += ' GROUP BY product_description, data_type ORDER BY total_fob DESC LIMIT 50';
   
-  const products = all(query, params);
+  const products = await all(query, params);
   res.json(products);
 });
 
 // Country breakdown
-app.get('/api/analytics/countries', (req, res) => {
+app.get('/api/analytics/countries', async (req, res) => {
   const { entity, type, month } = req.query;
   
   const field = type === 'exporter' ? 'exporter_name' : 'consignee_name';
@@ -1168,12 +1126,12 @@ app.get('/api/analytics/countries', (req, res) => {
   
   query += ' GROUP BY country_of_destination ORDER BY total_fob DESC';
   
-  const countries = all(query, params);
+  const countries = await all(query, params);
   res.json(countries);
 });
 
 // Monthly trends
-app.get('/api/analytics/trends', (req, res) => {
+app.get('/api/analytics/trends', async (req, res) => {
   const { entity, type } = req.query;
   
   let query = `
@@ -1196,12 +1154,12 @@ app.get('/api/analytics/trends', (req, res) => {
   
   query += ' GROUP BY month_year ORDER BY month_year';
   
-  const trends = all(query, params);
+  const trends = await all(query, params);
   res.json(trends);
 });
 
 // Dashboard summary
-app.get('/api/analytics/dashboard', (req, res) => {
+app.get('/api/analytics/dashboard', async (req, res) => {
   const { month } = req.query;
   
   let whereClause = '';
@@ -1211,7 +1169,7 @@ app.get('/api/analytics/dashboard', (req, res) => {
     params.push(month);
   }
 
-  const summary = get(`
+  const summary = await get(`
     SELECT 
       COUNT(DISTINCT declaration_id) as total_shipments,
       SUM(fob_value) as total_fob,
@@ -1222,7 +1180,7 @@ app.get('/api/analytics/dashboard', (req, res) => {
     FROM exports ${whereClause}
   `, params);
 
-  const byCategory = all(`
+  const byCategory = await all(`
     SELECT 
       data_type,
       COUNT(DISTINCT declaration_id) as shipment_count,
@@ -1231,7 +1189,7 @@ app.get('/api/analytics/dashboard', (req, res) => {
     GROUP BY data_type
   `, params);
 
-  const topExporters = all(`
+  const topExporters = await all(`
     SELECT 
       exporter_name,
       COUNT(DISTINCT declaration_id) as shipment_count,
@@ -1242,7 +1200,7 @@ app.get('/api/analytics/dashboard', (req, res) => {
     LIMIT 10
   `, params);
 
-  const topCountries = all(`
+  const topCountries = await all(`
     SELECT 
       country_of_destination,
       COUNT(DISTINCT declaration_id) as shipment_count,
@@ -1259,12 +1217,12 @@ app.get('/api/analytics/dashboard', (req, res) => {
 // ============= INTELLIGENCE ROUTES =============
 
 // Find prospective clients based on company's products
-app.get('/api/intelligence/prospective-clients', (req, res) => {
-  const company = get('SELECT company_name FROM company_info LIMIT 1');
+app.get('/api/intelligence/prospective-clients', async (req, res) => {
+  const company = await get('SELECT company_name FROM company_info LIMIT 1');
   const companyName = company?.company_name || 'AGNA';
   
   // Get products that the company exports
-  const companyProducts = all(`
+  const companyProducts = await all(`
     SELECT DISTINCT 
       hs_code,
       product_description,
@@ -1294,7 +1252,7 @@ app.get('/api/intelligence/prospective-clients', (req, res) => {
   const placeholders = hsCodeList.map(() => '?').join(',');
   
   // Find clients who buy similar products but NOT from this company
-  const prospectiveClients = all(`
+  const prospectiveClients = await all(`
     SELECT 
       consignee_name,
       country_of_destination,
@@ -1324,12 +1282,12 @@ app.get('/api/intelligence/prospective-clients', (req, res) => {
 });
 
 // Cross-sell analysis - what are current clients buying from competitors
-app.get('/api/intelligence/cross-sell', (req, res) => {
-  const company = get('SELECT company_name FROM company_info LIMIT 1');
+app.get('/api/intelligence/cross-sell', async (req, res) => {
+  const company = await get('SELECT company_name FROM company_info LIMIT 1');
   const companyName = company?.company_name || 'AGNA';
   
   // Get clients that buy from this company
-  const companyClients = all(`
+  const companyClients = await all(`
     SELECT DISTINCT consignee_name
     FROM exports 
     WHERE UPPER(exporter_name) LIKE ?
@@ -1350,7 +1308,7 @@ app.get('/api/intelligence/cross-sell', (req, res) => {
   const clientPlaceholders = clientNames.map(() => '?').join(',');
   
   // Get what company sells to these clients (HS codes)
-  const companyHsCodes = all(`
+  const companyHsCodes = await all(`
     SELECT DISTINCT hs_code
     FROM exports 
     WHERE UPPER(exporter_name) LIKE ?
@@ -1365,7 +1323,7 @@ app.get('/api/intelligence/cross-sell', (req, res) => {
   if (companyHsCodeList.length > 0) {
     const hsPlaceholders = companyHsCodeList.map(() => '?').join(',');
     
-    crossSellOpportunities = all(`
+    crossSellOpportunities = await all(`
       SELECT 
         e.consignee_name as client_name,
         e.country_of_destination,
@@ -1387,7 +1345,7 @@ app.get('/api/intelligence/cross-sell', (req, res) => {
     `, [...clientNames.map(n => n.toUpperCase()), `%${companyName}%`, ...companyHsCodeList]);
   } else {
     // If no HS codes, just show what clients buy from others
-    crossSellOpportunities = all(`
+    crossSellOpportunities = await all(`
       SELECT 
         e.consignee_name as client_name,
         e.country_of_destination,
@@ -1420,18 +1378,18 @@ app.get('/api/intelligence/cross-sell', (req, res) => {
 // ============= MONTHLY COMPARISON ROUTES =============
 
 // Get monthly comparison data
-app.get('/api/monthly-comparison', (req, res) => {
+app.get('/api/monthly-comparison', async (req, res) => {
   const { currentMonth, previousMonth } = req.query;
   
   if (!currentMonth || !previousMonth) {
     return res.status(400).json({ error: 'Both currentMonth and previousMonth required' });
   }
   
-  const company = get('SELECT company_name FROM company_info LIMIT 1');
+  const company = await get('SELECT company_name FROM company_info LIMIT 1');
   const companyName = company?.company_name || 'AGNA';
   
   // Competitor comparison (tracked competitors)
-  const competitors = all('SELECT name FROM competitors WHERE active = 1');
+  const competitors = await all('SELECT name FROM competitors WHERE active = 1');
   const competitorNames = competitors.map(c => c.name);
   
   let competitorComparison = [];
@@ -1439,7 +1397,7 @@ app.get('/api/monthly-comparison', (req, res) => {
     const placeholders = competitorNames.map(() => '?').join(',');
     
     // Current month data
-    const currentCompData = all(`
+    const currentCompData = await all(`
       SELECT 
         exporter_name,
         COUNT(DISTINCT declaration_id) as shipments,
@@ -1454,7 +1412,7 @@ app.get('/api/monthly-comparison', (req, res) => {
     `, [...competitorNames, currentMonth]);
     
     // Previous month data
-    const prevCompData = all(`
+    const prevCompData = await all(`
       SELECT 
         exporter_name,
         COUNT(DISTINCT declaration_id) as shipments,
@@ -1500,7 +1458,7 @@ app.get('/api/monthly-comparison', (req, res) => {
   }
   
   // Client comparison (tracked clients)
-  const clients = all('SELECT name FROM clients WHERE active = 1');
+  const clients = await all('SELECT name FROM clients WHERE active = 1');
   const clientNames = clients.map(c => c.name);
   
   let clientComparison = [];
@@ -1508,7 +1466,7 @@ app.get('/api/monthly-comparison', (req, res) => {
     const placeholders = clientNames.map(() => '?').join(',');
     
     // Current month data
-    const currentClientData = all(`
+    const currentClientData = await all(`
       SELECT 
         consignee_name,
         COUNT(DISTINCT declaration_id) as shipments,
@@ -1522,7 +1480,7 @@ app.get('/api/monthly-comparison', (req, res) => {
     `, [...clientNames, currentMonth]);
     
     // Previous month data
-    const prevClientData = all(`
+    const prevClientData = await all(`
       SELECT 
         consignee_name,
         COUNT(DISTINCT declaration_id) as shipments,
@@ -1558,14 +1516,14 @@ app.get('/api/monthly-comparison', (req, res) => {
     const placeholders = clientNames.map(() => '?').join(',');
     
     // Suppliers in current month
-    const currentSuppliers = all(`
+    const currentSuppliers = await all(`
       SELECT DISTINCT consignee_name, exporter_name
       FROM exports 
       WHERE UPPER(consignee_name) IN (${placeholders}) AND month_year = ?
     `, [...clientNames, currentMonth]);
     
     // Suppliers in previous month
-    const prevSuppliers = all(`
+    const prevSuppliers = await all(`
       SELECT DISTINCT consignee_name, exporter_name
       FROM exports 
       WHERE UPPER(consignee_name) IN (${placeholders}) AND month_year = ?
@@ -1585,7 +1543,7 @@ app.get('/api/monthly-comparison', (req, res) => {
         newParams.push(e.consignee_name.toUpperCase(), e.exporter_name.toUpperCase());
       });
       
-      newSuppliersToClients = all(`
+      newSuppliersToClients = await all(`
         SELECT 
           consignee_name as client,
           exporter_name as new_supplier,
@@ -1602,7 +1560,7 @@ app.get('/api/monthly-comparison', (req, res) => {
   }
   
   // Clients buying from new suppliers (any new supplier relationships)
-  const clientsNewSuppliers = all(`
+  const clientsNewSuppliers = await all(`
     SELECT 
       curr.consignee_name as client,
       curr.exporter_name as new_supplier,
@@ -1636,7 +1594,7 @@ app.get('/api/monthly-comparison', (req, res) => {
 });
 
 // Get detailed monthly comparison for an entity
-app.get('/api/monthly-comparison/details', (req, res) => {
+app.get('/api/monthly-comparison/details', async (req, res) => {
   const { entity, type, currentMonth, previousMonth } = req.query;
   
   if (!entity || !type || !currentMonth || !previousMonth) {
@@ -1646,7 +1604,7 @@ app.get('/api/monthly-comparison/details', (req, res) => {
   const field = type === 'competitor' ? 'exporter_name' : 'consignee_name';
   
   // Current month details
-  const currentData = all(`
+  const currentData = await all(`
     SELECT 
       declaration_id,
       shipment_date,
@@ -1666,7 +1624,7 @@ app.get('/api/monthly-comparison/details', (req, res) => {
   `, [entity.toUpperCase(), currentMonth]);
   
   // Previous month details
-  const previousData = all(`
+  const previousData = await all(`
     SELECT 
       declaration_id,
       shipment_date,
@@ -1686,26 +1644,26 @@ app.get('/api/monthly-comparison/details', (req, res) => {
   `, [entity.toUpperCase(), previousMonth]);
   
   // Product comparison
-  const currentProducts = all(`
+  const currentProducts = await all(`
     SELECT product_description, hs_code, SUM(quantity) as qty, SUM(fob_value) as fob
     FROM exports WHERE UPPER(${field}) = ? AND month_year = ?
     GROUP BY product_description, hs_code ORDER BY fob DESC
   `, [entity.toUpperCase(), currentMonth]);
   
-  const prevProducts = all(`
+  const prevProducts = await all(`
     SELECT product_description, hs_code, SUM(quantity) as qty, SUM(fob_value) as fob
     FROM exports WHERE UPPER(${field}) = ? AND month_year = ?
     GROUP BY product_description, hs_code ORDER BY fob DESC
   `, [entity.toUpperCase(), previousMonth]);
   
   // Country comparison
-  const currentCountries = all(`
+  const currentCountries = await all(`
     SELECT country_of_destination, COUNT(DISTINCT declaration_id) as shipments, SUM(fob_value) as fob
     FROM exports WHERE UPPER(${field}) = ? AND month_year = ?
     GROUP BY country_of_destination ORDER BY fob DESC
   `, [entity.toUpperCase(), currentMonth]);
   
-  const prevCountries = all(`
+  const prevCountries = await all(`
     SELECT country_of_destination, COUNT(DISTINCT declaration_id) as shipments, SUM(fob_value) as fob
     FROM exports WHERE UPPER(${field}) = ? AND month_year = ?
     GROUP BY country_of_destination ORDER BY fob DESC
@@ -1728,17 +1686,17 @@ app.get('/api/monthly-comparison/details', (req, res) => {
 // ============= BENCHMARKING ROUTES =============
 
 // Get company benchmarking data
-app.get('/api/benchmarking', (req, res) => {
+app.get('/api/benchmarking', async (req, res) => {
   const { month } = req.query;
   
-  const company = get('SELECT company_name FROM company_info LIMIT 1');
+  const company = await get('SELECT company_name FROM company_info LIMIT 1');
   const companyName = company?.company_name || 'AGNA';
   
   const monthFilter = month ? 'AND month_year = ?' : '';
   const monthParam = month ? [month] : [];
   
   // Company data
-  const companyData = get(`
+  const companyData = await get(`
     SELECT 
       COUNT(DISTINCT declaration_id) as shipments,
       SUM(fob_value) as total_fob,
@@ -1752,13 +1710,13 @@ app.get('/api/benchmarking', (req, res) => {
   `, [`%${companyName}%`, ...monthParam]);
   
   // All competitors data
-  const competitors = all('SELECT name FROM competitors WHERE active = 1');
+  const competitors = await all('SELECT name FROM competitors WHERE active = 1');
   const competitorNames = competitors.map(c => c.name);
   
   let competitorBenchmark = [];
   if (competitorNames.length > 0) {
     const placeholders = competitorNames.map(() => '?').join(',');
-    competitorBenchmark = all(`
+    competitorBenchmark = await all(`
       SELECT 
         exporter_name as name,
         COUNT(DISTINCT declaration_id) as shipments,
@@ -1776,7 +1734,7 @@ app.get('/api/benchmarking', (req, res) => {
   }
   
   // Market totals (all exporters)
-  const marketTotals = get(`
+  const marketTotals = await get(`
     SELECT 
       COUNT(DISTINCT declaration_id) as shipments,
       SUM(fob_value) as total_fob,
@@ -1786,7 +1744,7 @@ app.get('/api/benchmarking', (req, res) => {
   `, monthParam);
   
   // Company's clients and their other vendors
-  const companyClients = all(`
+  const companyClients = await all(`
     SELECT DISTINCT consignee_name
     FROM exports 
     WHERE UPPER(exporter_name) LIKE ? ${monthFilter}
@@ -1799,7 +1757,7 @@ app.get('/api/benchmarking', (req, res) => {
     const placeholders = clientNames.map(() => '?').join(',');
     
     // For each client, get all their suppliers and how they compare
-    clientVendorAnalysis = all(`
+    clientVendorAnalysis = await all(`
       SELECT 
         consignee_name as client,
         exporter_name as vendor,
@@ -1821,7 +1779,7 @@ app.get('/api/benchmarking', (req, res) => {
     : 0;
   
   // Company ranking among all exporters
-  const companyRank = get(`
+  const companyRank = await get(`
     SELECT COUNT(*) + 1 as rank
     FROM (
       SELECT exporter_name, SUM(fob_value) as total_fob
@@ -1849,21 +1807,21 @@ app.get('/api/benchmarking', (req, res) => {
 });
 
 // Export benchmarking to Excel
-app.get('/api/export/benchmarking', (req, res) => {
+app.get('/api/export/benchmarking', async (req, res) => {
   const { month } = req.query;
   
-  const company = get('SELECT company_name FROM company_info LIMIT 1');
+  const company = await get('SELECT company_name FROM company_info LIMIT 1');
   const companyName = company?.company_name || 'AGNA';
   
   const monthFilter = month ? 'AND month_year = ?' : '';
   const monthParam = month ? [month] : [];
   
   // Company vs Competitors
-  const competitors = all('SELECT name FROM competitors WHERE active = 1');
+  const competitors = await all('SELECT name FROM competitors WHERE active = 1');
   const allNames = [companyName, ...competitors.map(c => c.name)];
   const placeholders = allNames.map(() => 'UPPER(exporter_name) LIKE ?').join(' OR ');
   
-  const benchmark = all(`
+  const benchmark = await all(`
     SELECT 
       exporter_name as "Company",
       CASE WHEN UPPER(exporter_name) LIKE ? THEN 'Your Company' ELSE 'Competitor' END as "Type",
@@ -1881,7 +1839,7 @@ app.get('/api/export/benchmarking', (req, res) => {
   `, [`%${companyName}%`, ...allNames.map(n => `%${n}%`), ...monthParam]);
   
   // Client vendor analysis
-  const companyClients = all(`
+  const companyClients = await all(`
     SELECT DISTINCT consignee_name
     FROM exports 
     WHERE UPPER(exporter_name) LIKE ? ${monthFilter}
@@ -1893,7 +1851,7 @@ app.get('/api/export/benchmarking', (req, res) => {
     const clientNames = companyClients.map(c => c.consignee_name);
     const clientPlaceholders = clientNames.map(() => '?').join(',');
     
-    clientVendors = all(`
+    clientVendors = await all(`
       SELECT 
         consignee_name as "Client",
         exporter_name as "Vendor",
@@ -1926,25 +1884,25 @@ app.get('/api/export/benchmarking', (req, res) => {
 });
 
 // Export monthly comparison to Excel
-app.get('/api/export/monthly-comparison', (req, res) => {
+app.get('/api/export/monthly-comparison', async (req, res) => {
   const { currentMonth, previousMonth } = req.query;
   
   if (!currentMonth || !previousMonth) {
     return res.status(400).json({ error: 'Both months required' });
   }
   
-  const company = get('SELECT company_name FROM company_info LIMIT 1');
+  const company = await get('SELECT company_name FROM company_info LIMIT 1');
   const companyName = company?.company_name || 'AGNA';
   
   // Get all comparison data
-  const competitors = all('SELECT name FROM competitors WHERE active = 1');
+  const competitors = await all('SELECT name FROM competitors WHERE active = 1');
   const competitorNames = competitors.map(c => c.name);
   
   let competitorData = [];
   if (competitorNames.length > 0) {
     const placeholders = competitorNames.map(() => '?').join(',');
     
-    competitorData = all(`
+    competitorData = await all(`
       SELECT 
         exporter_name as "Competitor",
         month_year as "Month",
@@ -1961,14 +1919,14 @@ app.get('/api/export/monthly-comparison', (req, res) => {
     `, [...competitorNames, currentMonth, previousMonth]);
   }
   
-  const clients = all('SELECT name FROM clients WHERE active = 1');
+  const clients = await all('SELECT name FROM clients WHERE active = 1');
   const clientNames = clients.map(c => c.name);
   
   let clientData = [];
   if (clientNames.length > 0) {
     const placeholders = clientNames.map(() => '?').join(',');
     
-    clientData = all(`
+    clientData = await all(`
       SELECT 
         consignee_name as "Client",
         month_year as "Month",
@@ -1986,7 +1944,7 @@ app.get('/api/export/monthly-comparison', (req, res) => {
   }
   
   // New relationships
-  const newRelationships = all(`
+  const newRelationships = await all(`
     SELECT 
       curr.consignee_name as "Client",
       curr.exporter_name as "New Supplier",
@@ -2025,7 +1983,7 @@ app.get('/api/export/monthly-comparison', (req, res) => {
 
 // ============= FEEDBACK ROUTES =============
 
-app.post('/api/feedback', (req, res) => {
+app.post('/api/feedback', async (req, res) => {
   const { user_name, feedback_type, message, page } = req.body;
   if (!message) {
     return res.status(400).json({ error: 'Message is required' });
@@ -2040,15 +1998,15 @@ app.post('/api/feedback', (req, res) => {
   }
 });
 
-app.get('/api/feedback', (req, res) => {
-  const feedbacks = all('SELECT * FROM feedback ORDER BY created_at DESC');
+app.get('/api/feedback', async (req, res) => {
+  const feedbacks = await all('SELECT * FROM feedback ORDER BY created_at DESC');
   res.json(feedbacks);
 });
 
 // ============= CUSTOM REPORT ROUTES =============
 
 // Custom report by countries and/or companies
-app.get('/api/custom-report', (req, res) => {
+app.get('/api/custom-report', async (req, res) => {
   const { countries, exporters, consignees, month } = req.query;
   
   const countryList = countries ? countries.split(',').map(c => c.trim().toUpperCase()).filter(c => c) : [];
@@ -2088,7 +2046,7 @@ app.get('/api/custom-report', (req, res) => {
   }
   
   // Get summary data
-  const summary = all(`
+  const summary = await all(`
     SELECT 
       CASE 
         WHEN ? > 0 THEN country_of_destination
@@ -2108,7 +2066,7 @@ app.get('/api/custom-report', (req, res) => {
   `, [countryList.length, exporterList.length, ...params]);
   
   // Get detailed data
-  const details = all(`
+  const details = await all(`
     SELECT 
       declaration_id as "Declaration ID",
       shipment_date as "Shipment Date",
@@ -2133,7 +2091,7 @@ app.get('/api/custom-report', (req, res) => {
 });
 
 // Export custom report to Excel
-app.get('/api/export/custom-report', (req, res) => {
+app.get('/api/export/custom-report', async (req, res) => {
   const { countries, exporters, consignees, month } = req.query;
   
   const countryList = countries ? countries.split(',').map(c => c.trim().toUpperCase()).filter(c => c) : [];
@@ -2174,7 +2132,7 @@ app.get('/api/export/custom-report', (req, res) => {
   
   // Get summary data grouped appropriately
   const summaryParams = [countryList.length, exporterList.length, ...params];
-  const summary = all(`
+  const summary = await all(`
     SELECT 
       CASE 
         WHEN ? > 0 THEN country_of_destination
@@ -2193,7 +2151,7 @@ app.get('/api/export/custom-report', (req, res) => {
   `, summaryParams);
   
   // Get detailed data
-  const details = all(`
+  const details = await all(`
     SELECT 
       declaration_id as "Declaration ID",
       shipment_date as "Shipment Date",
@@ -2234,12 +2192,12 @@ app.get('/api/export/custom-report', (req, res) => {
 });
 
 // Export intelligence prospective clients to Excel
-app.get('/api/export/prospective-clients', (req, res) => {
-  const company = get('SELECT company_name FROM company_info LIMIT 1');
+app.get('/api/export/prospective-clients', async (req, res) => {
+  const company = await get('SELECT company_name FROM company_info LIMIT 1');
   const companyName = company?.company_name || 'AGNA';
   
   // Get products that the company exports
-  const companyProducts = all(`
+  const companyProducts = await all(`
     SELECT DISTINCT 
       hs_code,
       product_description,
@@ -2261,7 +2219,7 @@ app.get('/api/export/prospective-clients', (req, res) => {
   const placeholders = hsCodeList.map(() => '?').join(',');
   
   // Find prospective clients with detailed info
-  const prospectiveClients = all(`
+  const prospectiveClients = await all(`
     SELECT 
       consignee_name as "Consignee Name",
       country_of_destination as "Country",
@@ -2284,7 +2242,7 @@ app.get('/api/export/prospective-clients', (req, res) => {
   `, [...hsCodeList, `%${companyName}%`]);
   
   // Get product-wise breakdown for each prospective client
-  const productBreakdown = all(`
+  const productBreakdown = await all(`
     SELECT 
       consignee_name as "Consignee",
       product_description as "Product",
@@ -2331,12 +2289,12 @@ app.get('/api/export/prospective-clients', (req, res) => {
 });
 
 // Export cross-sell opportunities to Excel
-app.get('/api/export/cross-sell', (req, res) => {
-  const company = get('SELECT company_name FROM company_info LIMIT 1');
+app.get('/api/export/cross-sell', async (req, res) => {
+  const company = await get('SELECT company_name FROM company_info LIMIT 1');
   const companyName = company?.company_name || 'AGNA';
   
   // Get clients that buy from this company
-  const companyClients = all(`
+  const companyClients = await all(`
     SELECT DISTINCT consignee_name
     FROM exports 
     WHERE UPPER(exporter_name) LIKE ?
@@ -2353,7 +2311,7 @@ app.get('/api/export/cross-sell', (req, res) => {
   const clientPlaceholders = clientNames.map(() => '?').join(',');
   
   // Get what company sells to these clients (HS codes)
-  const companyHsCodes = all(`
+  const companyHsCodes = await all(`
     SELECT DISTINCT hs_code
     FROM exports 
     WHERE UPPER(exporter_name) LIKE ?
@@ -2367,7 +2325,7 @@ app.get('/api/export/cross-sell', (req, res) => {
   if (companyHsCodeList.length > 0) {
     const hsPlaceholders = companyHsCodeList.map(() => '?').join(',');
     
-    crossSellData = all(`
+    crossSellData = await all(`
       SELECT 
         e.consignee_name as "Your Client",
         e.country_of_destination as "Country",
@@ -2408,7 +2366,7 @@ app.get('/api/export/cross-sell', (req, res) => {
 });
 
 // Export entity details to Excel (for competitor/client detailed export)
-app.get('/api/export/entity-details', (req, res) => {
+app.get('/api/export/entity-details', async (req, res) => {
   const { entity, type, month } = req.query;
   
   if (!entity || !type) {
@@ -2424,7 +2382,7 @@ app.get('/api/export/entity-details', (req, res) => {
   }
 
   // Summary stats
-  const summary = get(`
+  const summary = await get(`
     SELECT 
       COUNT(DISTINCT declaration_id) as total_shipments,
       SUM(fob_value) as total_fob,
@@ -2439,7 +2397,7 @@ app.get('/api/export/entity-details', (req, res) => {
   `, params);
 
   // Products breakdown
-  const products = all(`
+  const products = await all(`
     SELECT 
       product_description as "Product",
       hs_code as "HS Code",
@@ -2456,7 +2414,7 @@ app.get('/api/export/entity-details', (req, res) => {
   `, params);
 
   // Countries breakdown
-  const countries = all(`
+  const countries = await all(`
     SELECT 
       country_of_destination as "Country",
       COUNT(DISTINCT declaration_id) as "Shipments",
@@ -2470,7 +2428,7 @@ app.get('/api/export/entity-details', (req, res) => {
   `, params);
 
   // All shipments
-  const shipments = all(`
+  const shipments = await all(`
     SELECT 
       declaration_id as "Declaration ID",
       shipment_date as "Date",
@@ -2532,10 +2490,10 @@ app.get('/api/export/entity-details', (req, res) => {
 // ============= EXPORT/REPORT ROUTES =============
 
 // Export competitor report
-app.get('/api/export/competitors', (req, res) => {
+app.get('/api/export/competitors', async (req, res) => {
   const { month } = req.query;
   
-  const competitors = all('SELECT name FROM competitors WHERE active = 1');
+  const competitors = await all('SELECT name FROM competitors WHERE active = 1');
   const competitorNames = competitors.map(c => c.name);
 
   if (competitorNames.length === 0) {
@@ -2572,7 +2530,7 @@ app.get('/api/export/competitors', (req, res) => {
   
   query += ' ORDER BY shipment_date DESC, exporter_name';
   
-  const data = all(query, params);
+  const data = await all(query, params);
   
   // Create workbook
   const ws = XLSX.utils.json_to_sheet(data);
@@ -2587,10 +2545,10 @@ app.get('/api/export/competitors', (req, res) => {
 });
 
 // Export client report
-app.get('/api/export/clients', (req, res) => {
+app.get('/api/export/clients', async (req, res) => {
   const { month } = req.query;
   
-  const clients = all('SELECT name FROM clients WHERE active = 1');
+  const clients = await all('SELECT name FROM clients WHERE active = 1');
   const clientNames = clients.map(c => c.name);
 
   if (clientNames.length === 0) {
@@ -2627,7 +2585,7 @@ app.get('/api/export/clients', (req, res) => {
   
   query += ' ORDER BY shipment_date DESC, consignee_name';
   
-  const data = all(query, params);
+  const data = await all(query, params);
   
   const ws = XLSX.utils.json_to_sheet(data);
   const wb = XLSX.utils.book_new();
@@ -2641,11 +2599,11 @@ app.get('/api/export/clients', (req, res) => {
 });
 
 // Export company comparison report
-app.get('/api/export/company-comparison', (req, res) => {
+app.get('/api/export/company-comparison', async (req, res) => {
   const { month } = req.query;
   
-  const company = get('SELECT company_name FROM company_info LIMIT 1');
-  const competitors = all('SELECT name FROM competitors WHERE active = 1');
+  const company = await get('SELECT company_name FROM company_info LIMIT 1');
+  const competitors = await all('SELECT name FROM competitors WHERE active = 1');
   
   const companyName = company?.company_name || 'AGNA';
   const allNames = [companyName, ...competitors.map(c => c.name)];
@@ -2678,7 +2636,7 @@ app.get('/api/export/company-comparison', (req, res) => {
   
   query += ' ORDER BY exporter_name, shipment_date DESC';
   
-  const data = all(query, params);
+  const data = await all(query, params);
   
   const ws = XLSX.utils.json_to_sheet(data);
   const wb = XLSX.utils.book_new();
@@ -2692,14 +2650,14 @@ app.get('/api/export/company-comparison', (req, res) => {
 });
 
 // Export summary report
-app.get('/api/export/summary', (req, res) => {
+app.get('/api/export/summary', async (req, res) => {
   const { month } = req.query;
   
   let whereClause = month ? 'WHERE month_year = ?' : '';
   const params = month ? [month] : [];
   
   // Get summary data
-  const summary = all(`
+  const summary = await all(`
     SELECT 
       exporter_name as "Exporter",
       COUNT(DISTINCT declaration_id) as "Shipments",
