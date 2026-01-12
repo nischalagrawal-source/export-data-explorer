@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import { createClient } from '@libsql/client';
 import XLSX from 'xlsx';
+import multer from 'multer';
 
 const app = express();
 
@@ -12,6 +13,9 @@ app.use(cors({
   allowedHeaders: ['Content-Type']
 }));
 app.use(express.json());
+
+// Multer config for memory storage (works with serverless)
+const upload = multer({ storage: multer.memoryStorage() });
 
 // Database setup - Turso (cloud SQLite)
 const dbUrl = process.env.TURSO_DATABASE_URL || 'file:local.db';
