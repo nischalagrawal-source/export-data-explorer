@@ -6,23 +6,25 @@ import multer from 'multer';
 
 const app = express();
 
-// Middleware
-app.use(cors({
-  origin: '*',
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
-
-// Handle preflight
-app.options('*', cors());
+// CORS middleware - must be first
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+  next();
+});
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Multer config for memory storage (works with serverless)
+// Multer config for memory storage
 const upload = multer({ 
   storage: multer.memoryStorage(),
-  limits: { fileSize: 50 * 1024 * 1024 } // 50MB limit
+  limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit for Vercel
 });
 
 // Database setup - Turso (cloud SQLite)
@@ -193,13 +195,21 @@ const findColumnValue = (row, possibleNames) => {
 };
 
 // ============= FILE UPLOAD ROUTE =============
-app.post('/api/upload', upload.single('file'), async (req, res) => {
+app.post('/api/upload', (req, res, next) => {
+  upload.single('file')(req, res, (err) => {
+    if (err) {
+      console.error('Multer error:', err);
+      return res.status(400).json({ error: 'File upload error', details: err.message });
+    }
+    next();
+  });
+}, async (req, res) => {
   console.log('Upload request received');
   console.log('File:', req.file ? 'present' : 'missing');
   console.log('Body:', req.body);
   
   if (!req.file) {
-    return res.status(400).json({ error: 'No file uploaded', debug: { body: req.body, headers: req.headers['content-type'] } });
+    return res.status(400).json({ error: 'No file uploaded', debug: { body: req.body, contentType: req.headers['content-type'] } });
   }
 
   const { dataType } = req.body;
