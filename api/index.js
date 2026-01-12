@@ -9,13 +9,21 @@ const app = express();
 // Middleware
 app.use(cors({
   origin: '*',
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type']
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
-app.use(express.json());
+
+// Handle preflight
+app.options('*', cors());
+
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Multer config for memory storage (works with serverless)
-const upload = multer({ storage: multer.memoryStorage() });
+const upload = multer({ 
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 50 * 1024 * 1024 } // 50MB limit
+});
 
 // Database setup - Turso (cloud SQLite)
 const dbUrl = process.env.TURSO_DATABASE_URL || 'file:local.db';
@@ -175,8 +183,12 @@ const findColumnValue = (row, possibleNames) => {
 
 // ============= FILE UPLOAD ROUTE =============
 app.post('/api/upload', upload.single('file'), async (req, res) => {
+  console.log('Upload request received');
+  console.log('File:', req.file ? 'present' : 'missing');
+  console.log('Body:', req.body);
+  
   if (!req.file) {
-    return res.status(400).json({ error: 'No file uploaded' });
+    return res.status(400).json({ error: 'No file uploaded', debug: { body: req.body, headers: req.headers['content-type'] } });
   }
 
   const { dataType } = req.body;
@@ -553,6 +565,12 @@ app.get('/api/intelligence/cross-sell', async (req, res) => {
 // Health check
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', database: dbInitialized ? 'connected' : 'pending' });
+});
+
+// Error handler
+app.use((err, req, res, next) => {
+  console.error('Error:', err);
+  res.status(500).json({ error: err.message || 'Internal server error' });
 });
 
 // Export for Vercel
