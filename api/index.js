@@ -51,32 +51,38 @@ const all = async (sql, params = []) => {
 async function initDb() {
   if (dbInitialized) return;
   
+  console.log('Initializing database...');
+  console.log('URL:', dbUrl ? dbUrl.substring(0, 50) : 'NOT SET');
+  
   db = createClient({
     url: dbUrl,
     authToken: authToken
   });
 
-  // Initialize tables
-  await db.execute(`
-    CREATE TABLE IF NOT EXISTS competitors (
+  // Test connection first
+  try {
+    await db.execute('SELECT 1');
+    console.log('Database connection successful');
+  } catch (connErr) {
+    console.error('Connection test failed:', connErr.message);
+    throw connErr;
+  }
+
+  // Initialize tables one by one with error handling
+  const tables = [
+    `CREATE TABLE IF NOT EXISTS competitors (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT UNIQUE NOT NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       active INTEGER DEFAULT 1
-    )
-  `);
-
-  await db.execute(`
-    CREATE TABLE IF NOT EXISTS clients (
+    )`,
+    `CREATE TABLE IF NOT EXISTS clients (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT UNIQUE NOT NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       active INTEGER DEFAULT 1
-    )
-  `);
-
-  await db.execute(`
-    CREATE TABLE IF NOT EXISTS exports (
+    )`,
+    `CREATE TABLE IF NOT EXISTS exports (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       declaration_id TEXT NOT NULL,
       exporter_name TEXT,
@@ -96,42 +102,41 @@ async function initDb() {
       month_year TEXT,
       upload_batch TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  await db.execute(`
-    CREATE TABLE IF NOT EXISTS company_info (
+    )`,
+    `CREATE TABLE IF NOT EXISTS company_info (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       company_name TEXT NOT NULL DEFAULT 'AGNA',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  await db.execute(`
-    CREATE TABLE IF NOT EXISTS feedback (
+    )`,
+    `CREATE TABLE IF NOT EXISTS feedback (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_name TEXT,
       feedback_type TEXT,
       message TEXT NOT NULL,
       page TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
+    )`
+  ];
 
-  // Create indexes
-  try {
-    await db.execute(`CREATE INDEX IF NOT EXISTS idx_exports_exporter ON exports(exporter_name)`);
-    await db.execute(`CREATE INDEX IF NOT EXISTS idx_exports_consignee ON exports(consignee_name)`);
-    await db.execute(`CREATE INDEX IF NOT EXISTS idx_exports_date ON exports(shipment_date)`);
-    await db.execute(`CREATE INDEX IF NOT EXISTS idx_exports_month ON exports(month_year)`);
-  } catch (e) {
-    // Indexes might already exist
+  for (const sql of tables) {
+    try {
+      await db.execute(sql);
+    } catch (e) {
+      console.log('Table might exist:', e.message);
+    }
   }
 
   // Insert default company if not exists
-  const companyExists = await get('SELECT COUNT(*) as count FROM company_info');
-  if (!companyExists || companyExists.count === 0) {
-    await run('INSERT INTO company_info (company_name) VALUES (?)', ['AGNA ORG AGROVILLA INDIA PRIVATE LIMITED']);
+  try {
+    const result = await db.execute('SELECT COUNT(*) as count FROM company_info');
+    if (!result.rows[0] || result.rows[0].count === 0) {
+      await db.execute({
+        sql: 'INSERT INTO company_info (company_name) VALUES (?)',
+        args: ['AGNA ORG AGROVILLA INDIA PRIVATE LIMITED']
+      });
+    }
+  } catch (e) {
+    console.log('Company init:', e.message);
   }
 
   dbInitialized = true;
