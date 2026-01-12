@@ -144,8 +144,14 @@ app.use(async (req, res, next) => {
     await initDb();
     next();
   } catch (err) {
-    console.error('DB init error:', err);
-    res.status(500).json({ error: 'Database initialization failed' });
+    console.error('DB init error:', err.message);
+    console.error('DB URL:', dbUrl ? dbUrl.substring(0, 40) + '...' : 'NOT SET');
+    console.error('Token set:', !!authToken);
+    res.status(500).json({ 
+      error: 'Database initialization failed', 
+      details: err.message,
+      hint: 'Check TURSO_DATABASE_URL and TURSO_AUTH_TOKEN in Vercel environment variables'
+    });
   }
 });
 
@@ -565,6 +571,23 @@ app.get('/api/intelligence/cross-sell', async (req, res) => {
 // Health check
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', database: dbInitialized ? 'connected' : 'pending' });
+});
+
+// Debug endpoint - check environment variables
+app.get('/api/debug', (req, res) => {
+  const dbUrlSet = !!process.env.TURSO_DATABASE_URL;
+  const tokenSet = !!process.env.TURSO_AUTH_TOKEN;
+  const dbUrlStart = process.env.TURSO_DATABASE_URL ? process.env.TURSO_DATABASE_URL.substring(0, 30) + '...' : 'NOT SET';
+  const tokenStart = process.env.TURSO_AUTH_TOKEN ? process.env.TURSO_AUTH_TOKEN.substring(0, 20) + '...' : 'NOT SET';
+  
+  res.json({
+    env_vars: {
+      TURSO_DATABASE_URL: dbUrlSet ? dbUrlStart : 'NOT SET',
+      TURSO_AUTH_TOKEN: tokenSet ? tokenStart : 'NOT SET'
+    },
+    database_initialized: dbInitialized,
+    using_local_fallback: dbUrl === 'file:local.db'
+  });
 });
 
 // Error handler
