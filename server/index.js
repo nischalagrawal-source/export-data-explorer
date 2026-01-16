@@ -22,11 +22,8 @@ app.use(cors({
 }));
 app.use(express.json());
 
-// Serve static files from the built frontend
+// NOTE: Static files are served AFTER all API routes (at the end of file)
 const clientDistPath = path.join(__dirname, '..', 'client', 'dist');
-if (fs.existsSync(clientDistPath)) {
-  app.use(express.static(clientDistPath));
-}
 
 // Ensure uploads directory exists
 const uploadsDir = path.join(__dirname, 'uploads');
@@ -2698,6 +2695,11 @@ app.get('/api/export/summary', async (req, res) => {
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.send(buffer);
 });
+
+// Serve static files from the built frontend (AFTER all API routes)
+if (fs.existsSync(clientDistPath)) {
+  app.use(express.static(clientDistPath));
+}
 
 // Serve frontend for all other routes (SPA support)
 app.get('*', (req, res) => {
