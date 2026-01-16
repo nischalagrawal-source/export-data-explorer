@@ -34,12 +34,15 @@ if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
 
-// Multer config for file uploads
+// Multer config for file uploads - 50MB limit for large Excel files
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadsDir),
   filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname}`)
 });
-const upload = multer({ storage });
+const upload = multer({ 
+  storage,
+  limits: { fileSize: 50 * 1024 * 1024 } // 50MB limit
+});
 
 // Database setup - Turso (cloud SQLite)
 // Set these environment variables:
@@ -49,8 +52,22 @@ const dbUrl = process.env.TURSO_DATABASE_URL || 'file:local.db';
 const authToken = process.env.TURSO_AUTH_TOKEN;
 
 console.log('📁 Database URL:', dbUrl.includes('turso') ? 'Turso Cloud' : 'Local SQLite');
+console.log('🔑 Auth Token:', authToken ? 'Set' : 'NOT SET');
 
 let db;
+let dbInitialized = false;
+
+// Debug endpoint - placed before other routes
+app.get('/api/debug', (req, res) => {
+  res.json({
+    status: 'ok',
+    database: dbUrl.includes('turso') ? 'Turso Cloud' : 'Local SQLite',
+    dbInitialized,
+    authToken: authToken ? 'Set' : 'NOT SET',
+    nodeEnv: process.env.NODE_ENV,
+    uploadsDir: uploadsDir
+  });
+});
 
 // Helper to run queries (async)
 const run = async (sql, params = []) => {
@@ -2694,11 +2711,16 @@ app.get('*', (req, res) => {
 
 // Start server after DB initialization
 initDb().then(() => {
+  dbInitialized = true;
   app.listen(PORT, HOST, () => {
     console.log(`🚀 Export Data Explorer running on port ${PORT}`);
     console.log(`🌐 Access at: http://localhost:${PORT}`);
   });
 }).catch(err => {
   console.error('Failed to initialize database:', err);
-  process.exit(1);
+  // Still start server but mark DB as not initialized
+  dbInitialized = false;
+  app.listen(PORT, HOST, () => {
+    console.log(`⚠️ Server started but DB initialization failed: ${err.message}`);
+  });
 });
