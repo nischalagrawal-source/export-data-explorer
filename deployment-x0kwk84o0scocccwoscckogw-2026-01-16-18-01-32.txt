@@ -1,0 +1,114 @@
+2026-Jan-16 18:00:14.534183 Starting deployment of nischalagrawal-source/export-data-explorer:main to localhost.
+2026-Jan-16 18:00:14.841596 Preparing container with helper image: ghcr.io/coollabsio/coolify-helper:1.0.12
+2026-Jan-16 18:00:16.692642 Image not found (ic880k8040g44wg4gwo8kss8:b833fb6f70e81259780ea6ae624f0f17ec98c1f9). Building new image.
+2026-Jan-16 18:00:16.698125 ----------------------------------------
+2026-Jan-16 18:00:16.702925 Importing nischalagrawal-source/export-data-explorer:main (commit sha b833fb6f70e81259780ea6ae624f0f17ec98c1f9) to /artifacts/x0kwk84o0scocccwoscckogw.
+2026-Jan-16 18:00:18.674405 Generating nixpacks configuration with: nixpacks plan -f json --env NIXPACKS_NODE_VERSION=22 --env COOLIFY_URL=http://ic880k8040g44wg4gwo8kss8.62.72.56.19.sslip.io --env COOLIFY_FQDN=ic880k8040g44wg4gwo8kss8.62.72.56.19.sslip.io --env COOLIFY_BRANCH=main --env COOLIFY_RESOURCE_UUID=ic880k8040g44wg4gwo8kss8 /artifacts/x0kwk84o0scocccwoscckogw
+2026-Jan-16 18:00:19.131300 Found application type: node.
+2026-Jan-16 18:00:19.137417 If you need further customization, please check the documentation of Nixpacks: https://nixpacks.com/docs/providers/node
+2026-Jan-16 18:00:19.887042 ----------------------------------------
+2026-Jan-16 18:00:19.899521 Building docker image started.
+2026-Jan-16 18:00:19.911422 To check the current progress, click on Show Debug Logs.
+2026-Jan-16 18:00:38.426893 ========================================
+2026-Jan-16 18:00:38.433197 Deployment failed: Command execution failed (exit code 1): docker exec x0kwk84o0scocccwoscckogw bash -c 'bash /artifacts/build.sh'
+2026-Jan-16 18:00:38.433197 Error: #0 building with "default" instance using docker driver
+2026-Jan-16 18:00:38.433197
+2026-Jan-16 18:00:38.433197 #1 [internal] load build definition from Dockerfile
+2026-Jan-16 18:00:38.433197 #1 transferring dockerfile: 1.35kB done
+2026-Jan-16 18:00:38.433197 #1 DONE 0.0s
+2026-Jan-16 18:00:38.433197
+2026-Jan-16 18:00:38.433197 #2 [internal] load metadata for ghcr.io/railwayapp/nixpacks:ubuntu-1745885067
+2026-Jan-16 18:00:38.433197 #2 DONE 0.6s
+2026-Jan-16 18:00:38.433197
+2026-Jan-16 18:00:38.433197 #3 [internal] load .dockerignore
+2026-Jan-16 18:00:38.433197 #3 transferring context: 2B done
+2026-Jan-16 18:00:38.433197 #3 DONE 0.0s
+2026-Jan-16 18:00:38.433197
+2026-Jan-16 18:00:38.433197 #4 [stage-0 1/11] FROM ghcr.io/railwayapp/nixpacks:ubuntu-1745885067@sha256:d45c89d80e13d7ad0fd555b5130f22a866d9dd10e861f589932303ef2314c7de
+2026-Jan-16 18:00:38.433197 #4 resolve ghcr.io/railwayapp/nixpacks:ubuntu-1745885067@sha256:d45c89d80e13d7ad0fd555b5130f22a866d9dd10e861f589932303ef2314c7de 0.0s done
+2026-Jan-16 18:00:38.433197 #4 DONE 0.0s
+2026-Jan-16 18:00:38.433197
+2026-Jan-16 18:00:38.433197 #5 [internal] load build context
+2026-Jan-16 18:00:38.433197 #5 transferring context: 538.62kB 0.0s done
+2026-Jan-16 18:00:38.433197 #5 DONE 0.1s
+2026-Jan-16 18:00:38.433197
+2026-Jan-16 18:00:38.433197 #6 [stage-0 2/11] WORKDIR /app/
+2026-Jan-16 18:00:38.433197 #6 CACHED
+2026-Jan-16 18:00:38.433197
+2026-Jan-16 18:00:38.433197 #7 [stage-0 3/11] COPY .nixpacks/nixpkgs-23f9169c4ccce521379e602cc82ed873a1f1b52b.nix .nixpacks/nixpkgs-23f9169c4ccce521379e602cc82ed873a1f1b52b.nix
+2026-Jan-16 18:00:38.433197 #7 CACHED
+2026-Jan-16 18:00:38.433197
+2026-Jan-16 18:00:38.433197 #8 [stage-0 4/11] RUN nix-env -if .nixpacks/nixpkgs-23f9169c4ccce521379e602cc82ed873a1f1b52b.nix && nix-collect-garbage -d
+2026-Jan-16 18:00:38.433197 #8 CACHED
+2026-Jan-16 18:00:38.433197
+2026-Jan-16 18:00:38.433197 #9 [stage-0 5/11] RUN sudo apt-get update && sudo apt-get install -y --no-install-recommends curl wget
+2026-Jan-16 18:00:38.433197 #9 CACHED
+2026-Jan-16 18:00:38.433197
+2026-Jan-16 18:00:38.433197 #10 [stage-0 6/11] COPY . /app/.
+2026-Jan-16 18:00:38.433197 #10 DONE 0.0s
+2026-Jan-16 18:00:38.433197
+2026-Jan-16 18:00:38.433197 #11 [stage-0 7/11] RUN --mount=type=cache,id=ic880k8040g44wg4gwo8kss8-/root/npm,target=/root/.npm npm ci
+2026-Jan-16 18:00:38.433197 #11 0.221 npm warn config production Use `--omit=dev` instead.
+2026-Jan-16 18:00:38.433197 #11 3.131 npm warn deprecated multer@1.4.5-lts.2: Multer 1.x is impacted by a number of vulnerabilities, which have been patched in 2.x. You should upgrade to the latest 2.x version.
+2026-Jan-16 18:00:38.433197 #11 3.594 npm warn deprecated node-domexception@1.0.0: Use your platform's native DOMException instead
+2026-Jan-16 18:00:38.433197 #11 14.69
+2026-Jan-16 18:00:38.433197 #11 14.69 added 156 packages, and audited 157 packages in 14s
+2026-Jan-16 18:00:38.433197 #11 14.69
+2026-Jan-16 18:00:38.433197 #11 14.69 26 packages are looking for funding
+2026-Jan-16 18:00:38.433197 #11 14.69 run `npm fund` for details
+2026-Jan-16 18:00:38.433197 #11 14.70
+2026-Jan-16 18:00:38.433197 #11 14.70 2 high severity vulnerabilities
+2026-Jan-16 18:00:38.433197 #11 14.70
+2026-Jan-16 18:00:38.433197 #11 14.70 To address issues that do not require attention, run:
+2026-Jan-16 18:00:38.433197 #11 14.70 npm audit fix
+2026-Jan-16 18:00:38.433197 #11 14.70
+2026-Jan-16 18:00:38.433197 #11 14.70 Some issues need review, and may require choosing
+2026-Jan-16 18:00:38.433197 #11 14.70 a different dependency.
+2026-Jan-16 18:00:38.433197 #11 14.70
+2026-Jan-16 18:00:38.433197 #11 14.70 Run `npm audit` for details.
+2026-Jan-16 18:00:38.433197 #11 DONE 15.1s
+2026-Jan-16 18:00:38.433197
+2026-Jan-16 18:00:38.433197 #12 [stage-0 8/11] COPY . /app/.
+2026-Jan-16 18:00:38.433197 #12 DONE 0.3s
+2026-Jan-16 18:00:38.433197
+2026-Jan-16 18:00:38.433197 #13 [stage-0 9/11] RUN --mount=type=cache,id=ic880k8040g44wg4gwo8kss8-node_modules/cache,target=/app/node_modules/.cache npm run build
+2026-Jan-16 18:00:38.433197 #13 0.267 npm warn config production Use `--omit=dev` instead.
+2026-Jan-16 18:00:38.433197 #13 0.298
+2026-Jan-16 18:00:38.433197 #13 0.298 > export-data-explorer@1.0.0 build
+2026-Jan-16 18:00:38.433197 #13 0.298 > cd client && npm run build
+2026-Jan-16 18:00:38.433197 #13 0.298
+2026-Jan-16 18:00:38.433197 #13 0.425 npm warn config production Use `--omit=dev` instead.
+2026-Jan-16 18:00:38.433197 #13 0.455
+2026-Jan-16 18:00:38.433197 #13 0.455 > export-data-explorer-client@1.0.0 build
+2026-Jan-16 18:00:38.433197 #13 0.455 > vite build
+2026-Jan-16 18:00:38.433197 #13 0.455
+2026-Jan-16 18:00:38.433197 #13 0.462 sh: 1: vite: not found
+2026-Jan-16 18:00:38.433197 #13 ERROR: process "/bin/bash -ol pipefail -c npm run build" did not complete successfully: exit code: 127
+2026-Jan-16 18:00:38.433197 ------
+2026-Jan-16 18:00:38.433197 > [stage-0 9/11] RUN --mount=type=cache,id=ic880k8040g44wg4gwo8kss8-node_modules/cache,target=/app/node_modules/.cache npm run build:
+2026-Jan-16 18:00:38.433197 0.298
+2026-Jan-16 18:00:38.433197 0.298 > export-data-explorer@1.0.0 build
+2026-Jan-16 18:00:38.433197 0.298 > cd client && npm run build
+2026-Jan-16 18:00:38.433197 0.298
+2026-Jan-16 18:00:38.433197 0.425 npm warn config production Use `--omit=dev` instead.
+2026-Jan-16 18:00:38.433197 0.455
+2026-Jan-16 18:00:38.433197 0.455 > export-data-explorer-client@1.0.0 build
+2026-Jan-16 18:00:38.433197 0.455 > vite build
+2026-Jan-16 18:00:38.433197 0.455
+2026-Jan-16 18:00:38.433197 0.462 sh: 1: vite: not found
+2026-Jan-16 18:00:38.433197 ------
+2026-Jan-16 18:00:38.433197
+2026-Jan-16 18:00:38.433197 1 warning found (use docker --debug to expand):
+2026-Jan-16 18:00:38.433197 - UndefinedVar: Usage of undefined variable '$NIXPACKS_PATH' (line 18)
+2026-Jan-16 18:00:38.433197 Dockerfile:24
+2026-Jan-16 18:00:38.433197 --------------------
+2026-Jan-16 18:00:38.433197 22 | # build phase
+2026-Jan-16 18:00:38.433197 23 | COPY . /app/.
+2026-Jan-16 18:00:38.433197 24 | >>> RUN --mount=type=cache,id=ic880k8040g44wg4gwo8kss8-node_modules/cache,target=/app/node_modules/.cache npm run build
+2026-Jan-16 18:00:38.433197 25 |
+2026-Jan-16 18:00:38.433197 26 |
+2026-Jan-16 18:00:38.433197 --------------------
+2026-Jan-16 18:00:38.433197 ERROR: failed to build: failed to solve: process "/bin/bash -ol pipefail -c npm run build" did not complete successfully: exit code: 127
+2026-Jan-16 18:00:38.433197 exit status 1
+2026-Jan-16 18:00:38.493569 ========================================
+2026-Jan-16 18:00:38.499490 Deployment failed. Removing the new version of your application.
