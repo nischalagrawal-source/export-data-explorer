@@ -49,6 +49,7 @@ console.log('🔑 Auth Token:', authToken ? 'Set' : 'NOT SET');
 
 let db;
 let dbInitialized = false;
+let autoSave = true; // For bulk import performance
 
 // Debug endpoint - placed before other routes
 app.get('/api/debug', (req, res) => {
