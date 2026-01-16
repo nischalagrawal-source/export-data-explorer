@@ -667,8 +667,7 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
     
     console.log(`Import complete: ${inserted} inserted, ${skipped} skipped, ${noIdCount} no ID`);
 
-    // Clean up uploaded file
-    fs.unlinkSync(req.file.path);
+    // No need to clean up - using memory storage (no file on disk)
 
     res.json({
       success: true,
