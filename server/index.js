@@ -25,19 +25,15 @@ app.use(express.json());
 // NOTE: Static files are served AFTER all API routes (at the end of file)
 const clientDistPath = path.join(__dirname, '..', 'client', 'dist');
 
-// Ensure uploads directory exists
+// Uploads directory (for local dev, not used on Render)
 const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
 
-// Multer config for file uploads - 50MB limit for large Excel files
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, uploadsDir),
-  filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname}`)
-});
+// Multer config - use memory storage for cloud deployment (no disk needed)
 const upload = multer({ 
-  storage,
+  storage: multer.memoryStorage(),
   limits: { fileSize: 50 * 1024 * 1024 } // 50MB limit
 });
 
@@ -403,9 +399,14 @@ const findColumnValue = (row, possibleNames) => {
 
 // ============= FILE UPLOAD ROUTE =============
 app.post('/api/upload', upload.single('file'), async (req, res) => {
+  console.log('📤 Upload request received');
+  
   if (!req.file) {
+    console.log('❌ No file in request');
     return res.status(400).json({ error: 'No file uploaded' });
   }
+
+  console.log(`📁 File received: ${req.file.originalname}, size: ${req.file.size} bytes`);
 
   const { dataType } = req.body;
   if (!dataType || !['fruits', 'vegetables'].includes(dataType)) {
@@ -413,10 +414,13 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
   }
 
   try {
-    const workbook = XLSX.readFile(req.file.path);
+    // Read from buffer (memory) instead of disk
+    const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
     const sheetName = workbook.SheetNames[0];
     const worksheet = workbook.Sheets[sheetName];
     const data = XLSX.utils.sheet_to_json(worksheet);
+    
+    console.log(`📊 Parsed ${data.length} rows from Excel`);
 
     if (data.length === 0) {
       return res.status(400).json({ error: 'Excel file is empty' });
