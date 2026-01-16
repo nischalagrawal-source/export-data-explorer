@@ -1,10 +1,11 @@
 services:
   - type: web
     name: export-data-explorer
-    env: node
+    runtime: node
     plan: free
-    buildCommand: npm install && cd client && npm install && npm run build
-    startCommand: node server/index.js
+    region: singapore
+    buildCommand: npm run build:prod
+    startCommand: npm start
     envVars:
       - key: NODE_ENV
         value: production
