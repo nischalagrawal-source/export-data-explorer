@@ -6,6 +6,11 @@ import { fileURLToPath } from 'url';
 import { createClient } from '@libsql/client';
 import XLSX from 'xlsx';
 import fs from 'fs';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+
+// JWT Secret - use environment variable in production
+const JWT_SECRET = process.env.JWT_SECRET || 'ede-secret-key-change-in-production-2024';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -61,6 +66,228 @@ app.get('/api/debug', (req, res) => {
     nodeEnv: process.env.NODE_ENV,
     uploadsDir: uploadsDir
   });
+});
+
+// ============= AUTHENTICATION MIDDLEWARE =============
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+
+  if (!token) {
+    return res.status(401).json({ error: 'Authentication required' });
+  }
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) {
+      return res.status(403).json({ error: 'Invalid or expired token' });
+    }
+    req.user = user;
+    next();
+  });
+};
+
+// Admin only middleware
+const requireAdmin = (req, res, next) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Admin access required' });
+  }
+  next();
+};
+
+// ============= AUTH ROUTES (PUBLIC) =============
+
+// Login
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    
+    if (!username || !password) {
+      return res.status(400).json({ error: 'Username and password required' });
+    }
+    
+    const user = await get('SELECT * FROM users WHERE username = ? AND active = 1', [username.toLowerCase()]);
+    
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid username or password' });
+    }
+    
+    const validPassword = await bcrypt.compare(password, user.password_hash);
+    if (!validPassword) {
+      return res.status(401).json({ error: 'Invalid username or password' });
+    }
+    
+    // Update last login
+    await run('UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?', [user.id]);
+    
+    // Generate JWT token
+    const token = jwt.sign(
+      { id: user.id, username: user.username, role: user.role, full_name: user.full_name },
+      JWT_SECRET,
+      { expiresIn: '24h' }
+    );
+    
+    res.json({
+      success: true,
+      token,
+      user: {
+        id: user.id,
+        username: user.username,
+        role: user.role,
+        full_name: user.full_name
+      }
+    });
+  } catch (err) {
+    console.error('Login error:', err);
+    res.status(500).json({ error: 'Login failed' });
+  }
+});
+
+// Verify token (check if user is still logged in)
+app.get('/api/auth/verify', authenticateToken, (req, res) => {
+  res.json({ 
+    valid: true, 
+    user: req.user 
+  });
+});
+
+// Change password
+app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+    
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ error: 'Current and new password required' });
+    }
+    
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: 'New password must be at least 6 characters' });
+    }
+    
+    const user = await get('SELECT * FROM users WHERE id = ?', [req.user.id]);
+    
+    const validPassword = await bcrypt.compare(currentPassword, user.password_hash);
+    if (!validPassword) {
+      return res.status(401).json({ error: 'Current password is incorrect' });
+    }
+    
+    const newHash = await bcrypt.hash(newPassword, 10);
+    await run('UPDATE users SET password_hash = ? WHERE id = ?', [newHash, req.user.id]);
+    
+    res.json({ success: true, message: 'Password changed successfully' });
+  } catch (err) {
+    console.error('Change password error:', err);
+    res.status(500).json({ error: 'Failed to change password' });
+  }
+});
+
+// ============= USER MANAGEMENT ROUTES (ADMIN ONLY) =============
+
+// Get all users
+app.get('/api/users', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const users = await all('SELECT id, username, role, full_name, active, created_at, last_login FROM users ORDER BY created_at DESC');
+    res.json(users);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Create new user
+app.post('/api/users', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { username, password, role, full_name } = req.body;
+    
+    if (!username || !password) {
+      return res.status(400).json({ error: 'Username and password required' });
+    }
+    
+    if (password.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    }
+    
+    const validRole = role === 'admin' ? 'admin' : 'user';
+    const passwordHash = await bcrypt.hash(password, 10);
+    
+    await run(
+      'INSERT INTO users (username, password_hash, role, full_name) VALUES (?, ?, ?, ?)',
+      [username.toLowerCase(), passwordHash, validRole, full_name || username]
+    );
+    
+    const newUser = await get('SELECT id, username, role, full_name, created_at FROM users WHERE username = ?', [username.toLowerCase()]);
+    
+    res.json({ success: true, user: newUser });
+  } catch (err) {
+    if (err.message && err.message.includes('UNIQUE')) {
+      return res.status(400).json({ error: 'Username already exists' });
+    }
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update user
+app.put('/api/users/:id', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const userId = parseInt(req.params.id);
+    const { full_name, role, active, password } = req.body;
+    
+    // Don't allow admin to deactivate themselves
+    if (userId === req.user.id && active === 0) {
+      return res.status(400).json({ error: 'Cannot deactivate your own account' });
+    }
+    
+    if (password) {
+      if (password.length < 6) {
+        return res.status(400).json({ error: 'Password must be at least 6 characters' });
+      }
+      const passwordHash = await bcrypt.hash(password, 10);
+      await run('UPDATE users SET password_hash = ? WHERE id = ?', [passwordHash, userId]);
+    }
+    
+    if (full_name !== undefined) {
+      await run('UPDATE users SET full_name = ? WHERE id = ?', [full_name, userId]);
+    }
+    
+    if (role !== undefined) {
+      const validRole = role === 'admin' ? 'admin' : 'user';
+      await run('UPDATE users SET role = ? WHERE id = ?', [validRole, userId]);
+    }
+    
+    if (active !== undefined) {
+      await run('UPDATE users SET active = ? WHERE id = ?', [active ? 1 : 0, userId]);
+    }
+    
+    const updatedUser = await get('SELECT id, username, role, full_name, active, created_at, last_login FROM users WHERE id = ?', [userId]);
+    res.json({ success: true, user: updatedUser });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete user
+app.delete('/api/users/:id', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const userId = parseInt(req.params.id);
+    
+    // Don't allow admin to delete themselves
+    if (userId === req.user.id) {
+      return res.status(400).json({ error: 'Cannot delete your own account' });
+    }
+    
+    await run('DELETE FROM users WHERE id = ?', [userId]);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============= PROTECT ALL OTHER API ROUTES =============
+// All routes below this middleware require authentication
+app.use('/api', (req, res, next) => {
+  // Skip auth for login and debug routes
+  if (req.path === '/auth/login' || req.path === '/debug') {
+    return next();
+  }
+  authenticateToken(req, res, next);
 });
 
 // Helper to run queries (async)
@@ -175,6 +402,29 @@ async function initDb() {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
+
+  // Create users table for authentication
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      role TEXT CHECK(role IN ('admin', 'user')) DEFAULT 'user',
+      full_name TEXT,
+      active INTEGER DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      last_login DATETIME
+    )
+  `);
+
+  // Create default admin account if no users exist
+  const userCount = await get('SELECT COUNT(*) as count FROM users');
+  if (!userCount || userCount.count === 0) {
+    const adminPassword = await bcrypt.hash('admin123', 10);
+    await run('INSERT INTO users (username, password_hash, role, full_name) VALUES (?, ?, ?, ?)', 
+      ['admin', adminPassword, 'admin', 'Administrator']);
+    console.log('📋 Default admin account created (username: admin, password: admin123)');
+  }
 
   // Insert default company if not exists
   const companyExists = await get('SELECT COUNT(*) as count FROM company_info');

@@ -10,11 +10,43 @@ import {
   FileSpreadsheet, Calendar, DollarSign, ArrowUpRight, ArrowDownRight,
   LayoutDashboard, Target, UserCheck, Building, Settings, Menu, X,
   Download, FileDown, Lightbulb, ShoppingCart, UserPlus, FileText,
-  MessageSquare, Send, Bug, Sparkles, HelpCircle, FileSearch, FilePlus2
+  MessageSquare, Send, Bug, Sparkles, HelpCircle, FileSearch, FilePlus2,
+  LogOut, Lock, User, Eye, EyeOff, Shield, UserCog, Key
 } from 'lucide-react';
 
 // API Base URL - always use relative path (works on Vercel)
 const API_BASE = '/api';
+
+// Configure axios to include auth token
+const getAuthHeader = () => {
+  const token = localStorage.getItem('ede_token');
+  return token ? { Authorization: `Bearer ${token}` } : {};
+};
+
+// Create axios instance with auth
+const api = axios.create({ baseURL: API_BASE });
+
+// Add auth header to all requests
+api.interceptors.request.use(config => {
+  const token = localStorage.getItem('ede_token');
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+// Handle 401/403 responses (logout user)
+api.interceptors.response.use(
+  response => response,
+  error => {
+    if (error.response && (error.response.status === 401 || error.response.status === 403)) {
+      localStorage.removeItem('ede_token');
+      localStorage.removeItem('ede_user');
+      window.location.reload();
+    }
+    return Promise.reject(error);
+  }
+);
 
 // USD to INR conversion rate (can be updated)
 const USD_TO_INR = 83.5;
@@ -135,8 +167,526 @@ const NavItem = ({ icon: Icon, label, active, onClick, badge }) => (
   </button>
 );
 
+// Login Component
+const LoginPage = ({ onLogin }) => {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+
+    try {
+      const response = await api.post(`/auth/login`, { username, password });
+      if (response.data.success) {
+        localStorage.setItem('ede_token', response.data.token);
+        localStorage.setItem('ede_user', JSON.stringify(response.data.user));
+        onLogin(response.data.user);
+      }
+    } catch (err) {
+      setError(err.response?.data?.error || 'Login failed. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-navy-950 via-navy-900 to-navy-950 flex items-center justify-center p-4">
+      <div className="w-full max-w-md">
+        {/* Logo/Header */}
+        <div className="text-center mb-8">
+          <div className="w-16 h-16 bg-gradient-to-r from-amber-500 to-amber-600 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg">
+            <Package className="w-8 h-8 text-navy-950" />
+          </div>
+          <h1 className="text-2xl font-bold text-white">Export Data Explorer</h1>
+          <p className="text-slate-400 mt-2">Sign in to access the dashboard</p>
+        </div>
+
+        {/* Login Form */}
+        <div className="glass-card rounded-2xl p-8">
+          <form onSubmit={handleSubmit} className="space-y-6">
+            {error && (
+              <div className="bg-rose-500/10 border border-rose-500/30 rounded-lg p-3 text-rose-400 text-sm">
+                {error}
+              </div>
+            )}
+
+            <div>
+              <label className="block text-sm text-slate-400 mb-2">Username</label>
+              <div className="relative">
+                <User className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-slate-500" />
+                <input
+                  type="text"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  className="w-full bg-white/5 border border-white/10 rounded-lg pl-10 pr-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-amber-500/50"
+                  placeholder="Enter username"
+                  required
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-sm text-slate-400 mb-2">Password</label>
+              <div className="relative">
+                <Lock className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-slate-500" />
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full bg-white/5 border border-white/10 rounded-lg pl-10 pr-12 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-amber-500/50"
+                  placeholder="Enter password"
+                  required
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-3 top-1/2 transform -translate-y-1/2 text-slate-500 hover:text-white"
+                >
+                  {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                </button>
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full bg-gradient-to-r from-amber-500 to-amber-600 text-navy-950 font-semibold py-3 rounded-lg hover:shadow-lg hover:shadow-amber-500/25 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+            >
+              {loading ? (
+                <div className="w-5 h-5 border-2 border-navy-950 border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <>
+                  <Lock className="w-5 h-5" />
+                  Sign In
+                </>
+              )}
+            </button>
+          </form>
+        </div>
+
+        {/* Footer */}
+        <p className="text-center text-slate-500 text-sm mt-6">
+          Agrovilla Export Data Explorer
+        </p>
+      </div>
+    </div>
+  );
+};
+
+// User Management Component (Admin Only)
+const UserManagement = ({ currentUser }) => {
+  const [users, setUsers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showAddUser, setShowAddUser] = useState(false);
+  const [newUser, setNewUser] = useState({ username: '', password: '', full_name: '', role: 'user' });
+  const [editingUser, setEditingUser] = useState(null);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+
+  const fetchUsers = async () => {
+    try {
+      const response = await api.get('/users');
+      setUsers(response.data);
+    } catch (err) {
+      setError('Failed to load users');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchUsers();
+  }, []);
+
+  const handleAddUser = async (e) => {
+    e.preventDefault();
+    setError('');
+    try {
+      await api.post('/users', newUser);
+      setSuccess('User created successfully');
+      setShowAddUser(false);
+      setNewUser({ username: '', password: '', full_name: '', role: 'user' });
+      fetchUsers();
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to create user');
+    }
+  };
+
+  const handleToggleActive = async (user) => {
+    try {
+      await api.put(`/users/${user.id}`, { active: user.active ? 0 : 1 });
+      fetchUsers();
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to update user');
+    }
+  };
+
+  const handleResetPassword = async (userId) => {
+    const newPassword = prompt('Enter new password (min 6 characters):');
+    if (!newPassword || newPassword.length < 6) {
+      setError('Password must be at least 6 characters');
+      return;
+    }
+    try {
+      await api.put(`/users/${userId}`, { password: newPassword });
+      setSuccess('Password reset successfully');
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to reset password');
+    }
+  };
+
+  const handleDeleteUser = async (userId) => {
+    if (!confirm('Are you sure you want to delete this user?')) return;
+    try {
+      await api.delete(`/users/${userId}`);
+      setSuccess('User deleted successfully');
+      fetchUsers();
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to delete user');
+    }
+  };
+
+  if (loading) {
+    return <div className="flex items-center justify-center p-8"><div className="w-8 h-8 border-4 border-amber-500 border-t-transparent rounded-full animate-spin" /></div>;
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h2 className="text-xl font-semibold text-white flex items-center gap-2">
+          <UserCog className="w-6 h-6 text-amber-400" />
+          User Management
+        </h2>
+        <button onClick={() => setShowAddUser(true)} className="btn-primary">
+          <Plus className="w-4 h-4" />
+          Add User
+        </button>
+      </div>
+
+      {error && (
+        <div className="bg-rose-500/10 border border-rose-500/30 rounded-lg p-3 text-rose-400 text-sm">
+          {error}
+          <button onClick={() => setError('')} className="ml-2 text-rose-300 hover:text-white">×</button>
+        </div>
+      )}
+
+      {success && (
+        <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-lg p-3 text-emerald-400 text-sm">
+          {success}
+          <button onClick={() => setSuccess('')} className="ml-2 text-emerald-300 hover:text-white">×</button>
+        </div>
+      )}
+
+      {/* Users Table */}
+      <div className="glass-card rounded-xl overflow-hidden">
+        <table className="w-full">
+          <thead className="bg-white/5 border-b border-white/10">
+            <tr>
+              <th className="text-left text-slate-400 font-medium p-4">Username</th>
+              <th className="text-left text-slate-400 font-medium p-4">Full Name</th>
+              <th className="text-left text-slate-400 font-medium p-4">Role</th>
+              <th className="text-left text-slate-400 font-medium p-4">Status</th>
+              <th className="text-left text-slate-400 font-medium p-4">Last Login</th>
+              <th className="text-right text-slate-400 font-medium p-4">Actions</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-white/5">
+            {users.map(user => (
+              <tr key={user.id} className="hover:bg-white/5">
+                <td className="p-4 text-white font-medium">{user.username}</td>
+                <td className="p-4 text-slate-300">{user.full_name || '-'}</td>
+                <td className="p-4">
+                  <span className={`px-2 py-1 rounded-full text-xs ${
+                    user.role === 'admin' 
+                      ? 'bg-amber-500/20 text-amber-400' 
+                      : 'bg-sky-500/20 text-sky-400'
+                  }`}>
+                    {user.role === 'admin' ? 'Admin' : 'User'}
+                  </span>
+                </td>
+                <td className="p-4">
+                  <span className={`px-2 py-1 rounded-full text-xs ${
+                    user.active ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'
+                  }`}>
+                    {user.active ? 'Active' : 'Inactive'}
+                  </span>
+                </td>
+                <td className="p-4 text-slate-400 text-sm">
+                  {user.last_login ? new Date(user.last_login).toLocaleDateString() : 'Never'}
+                </td>
+                <td className="p-4 text-right">
+                  {user.id !== currentUser.id && (
+                    <div className="flex items-center justify-end gap-2">
+                      <button
+                        onClick={() => handleToggleActive(user)}
+                        className={`p-2 rounded-lg ${user.active ? 'bg-rose-500/10 text-rose-400 hover:bg-rose-500/20' : 'bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20'}`}
+                        title={user.active ? 'Deactivate' : 'Activate'}
+                      >
+                        {user.active ? <X className="w-4 h-4" /> : <UserCheck className="w-4 h-4" />}
+                      </button>
+                      <button
+                        onClick={() => handleResetPassword(user.id)}
+                        className="p-2 rounded-lg bg-amber-500/10 text-amber-400 hover:bg-amber-500/20"
+                        title="Reset Password"
+                      >
+                        <Key className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={() => handleDeleteUser(user.id)}
+                        className="p-2 rounded-lg bg-rose-500/10 text-rose-400 hover:bg-rose-500/20"
+                        title="Delete User"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  )}
+                  {user.id === currentUser.id && (
+                    <span className="text-slate-500 text-sm">(You)</span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Add User Modal */}
+      {showAddUser && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="glass-card rounded-2xl p-6 w-full max-w-md">
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-lg font-semibold text-white">Add New User</h3>
+              <button onClick={() => setShowAddUser(false)} className="text-slate-400 hover:text-white">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <form onSubmit={handleAddUser} className="space-y-4">
+              <div>
+                <label className="block text-sm text-slate-400 mb-2">Username *</label>
+                <input
+                  type="text"
+                  value={newUser.username}
+                  onChange={(e) => setNewUser({ ...newUser, username: e.target.value })}
+                  className="w-full bg-white/5 border border-white/10 rounded-lg p-3 text-white"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-slate-400 mb-2">Password *</label>
+                <input
+                  type="password"
+                  value={newUser.password}
+                  onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
+                  className="w-full bg-white/5 border border-white/10 rounded-lg p-3 text-white"
+                  placeholder="Min 6 characters"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-slate-400 mb-2">Full Name</label>
+                <input
+                  type="text"
+                  value={newUser.full_name}
+                  onChange={(e) => setNewUser({ ...newUser, full_name: e.target.value })}
+                  className="w-full bg-white/5 border border-white/10 rounded-lg p-3 text-white"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-slate-400 mb-2">Role</label>
+                <select
+                  value={newUser.role}
+                  onChange={(e) => setNewUser({ ...newUser, role: e.target.value })}
+                  className="w-full bg-white/5 border border-white/10 rounded-lg p-3 text-white"
+                >
+                  <option value="user">User</option>
+                  <option value="admin">Admin</option>
+                </select>
+              </div>
+              <div className="flex gap-3 pt-4">
+                <button type="button" onClick={() => setShowAddUser(false)} className="flex-1 btn-secondary">
+                  Cancel
+                </button>
+                <button type="submit" className="flex-1 btn-primary justify-center">
+                  Create User
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// Change Password Component
+const ChangePassword = () => {
+  const [form, setForm] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' });
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError('');
+    setSuccess('');
+
+    if (form.newPassword !== form.confirmPassword) {
+      setError('New passwords do not match');
+      return;
+    }
+
+    if (form.newPassword.length < 6) {
+      setError('New password must be at least 6 characters');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      await api.post('/auth/change-password', {
+        currentPassword: form.currentPassword,
+        newPassword: form.newPassword
+      });
+      setSuccess('Password changed successfully');
+      setForm({ currentPassword: '', newPassword: '', confirmPassword: '' });
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to change password');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="glass-card rounded-xl p-6 max-w-md">
+      <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+        <Key className="w-5 h-5 text-amber-400" />
+        Change Password
+      </h3>
+
+      {error && (
+        <div className="bg-rose-500/10 border border-rose-500/30 rounded-lg p-3 text-rose-400 text-sm mb-4">
+          {error}
+        </div>
+      )}
+
+      {success && (
+        <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-lg p-3 text-emerald-400 text-sm mb-4">
+          {success}
+        </div>
+      )}
+
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <div>
+          <label className="block text-sm text-slate-400 mb-2">Current Password</label>
+          <input
+            type="password"
+            value={form.currentPassword}
+            onChange={(e) => setForm({ ...form, currentPassword: e.target.value })}
+            className="w-full bg-white/5 border border-white/10 rounded-lg p-3 text-white"
+            required
+          />
+        </div>
+        <div>
+          <label className="block text-sm text-slate-400 mb-2">New Password</label>
+          <input
+            type="password"
+            value={form.newPassword}
+            onChange={(e) => setForm({ ...form, newPassword: e.target.value })}
+            className="w-full bg-white/5 border border-white/10 rounded-lg p-3 text-white"
+            placeholder="Min 6 characters"
+            required
+          />
+        </div>
+        <div>
+          <label className="block text-sm text-slate-400 mb-2">Confirm New Password</label>
+          <input
+            type="password"
+            value={form.confirmPassword}
+            onChange={(e) => setForm({ ...form, confirmPassword: e.target.value })}
+            className="w-full bg-white/5 border border-white/10 rounded-lg p-3 text-white"
+            required
+          />
+        </div>
+        <button type="submit" disabled={loading} className="btn-primary w-full justify-center">
+          {loading ? (
+            <div className="w-5 h-5 border-2 border-navy-950 border-t-transparent rounded-full animate-spin" />
+          ) : (
+            'Change Password'
+          )}
+        </button>
+      </form>
+    </div>
+  );
+};
+
 // Main App Component
 function App() {
+  // Authentication state
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [currentUser, setCurrentUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+
+  // Check for existing token on mount
+  useEffect(() => {
+    const token = localStorage.getItem('ede_token');
+    const user = localStorage.getItem('ede_user');
+    
+    if (token && user) {
+      // Verify token is still valid
+      api.get('/auth/verify')
+        .then(response => {
+          setCurrentUser(JSON.parse(user));
+          setIsAuthenticated(true);
+        })
+        .catch(() => {
+          // Token invalid, clear storage
+          localStorage.removeItem('ede_token');
+          localStorage.removeItem('ede_user');
+        })
+        .finally(() => {
+          setAuthLoading(false);
+        });
+    } else {
+      setAuthLoading(false);
+    }
+  }, []);
+
+  const handleLogin = (user) => {
+    setCurrentUser(user);
+    setIsAuthenticated(true);
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('ede_token');
+    localStorage.removeItem('ede_user');
+    setCurrentUser(null);
+    setIsAuthenticated(false);
+  };
+
+  // Show loading while checking auth
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-navy-950 via-navy-900 to-navy-950 flex items-center justify-center">
+        <div className="w-12 h-12 border-4 border-amber-500 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  // Show login page if not authenticated
+  if (!isAuthenticated) {
+    return <LoginPage onLogin={handleLogin} />;
+  }
+
+  // Main app content (wrapped in AuthenticatedApp component for cleanliness)
+  return <AuthenticatedApp currentUser={currentUser} onLogout={handleLogout} />;
+}
+
+// Authenticated App Component (the original App content)
+function AuthenticatedApp({ currentUser, onLogout }) {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [loading, setLoading] = useState(false);
@@ -219,7 +769,7 @@ function App() {
 
   const fetchCompetitors = async () => {
     try {
-      const res = await axios.get(`${API_BASE}/competitors`);
+      const res = await api.get(`/competitors`);
       setCompetitors(res.data);
     } catch (err) {
       console.error('Error fetching competitors:', err);
@@ -228,7 +778,7 @@ function App() {
 
   const fetchClients = async () => {
     try {
-      const res = await axios.get(`${API_BASE}/clients`);
+      const res = await api.get(`/clients`);
       setClients(res.data);
     } catch (err) {
       console.error('Error fetching clients:', err);
@@ -237,7 +787,7 @@ function App() {
 
   const fetchCompany = async () => {
     try {
-      const res = await axios.get(`${API_BASE}/company`);
+      const res = await api.get(`/company`);
       setCompanyName(res.data?.company_name || 'AGNA');
     } catch (err) {
       console.error('Error fetching company:', err);
@@ -246,7 +796,7 @@ function App() {
 
   const fetchMonths = async () => {
     try {
-      const res = await axios.get(`${API_BASE}/analytics/months`);
+      const res = await api.get(`/analytics/months`);
       setMonths(res.data);
       if (res.data.length > 0) {
         setSelectedMonth(res.data[0]);
@@ -261,7 +811,7 @@ function App() {
 
   const fetchDashboard = async () => {
     try {
-      const res = await axios.get(`${API_BASE}/analytics/dashboard`, {
+      const res = await api.get(`/analytics/dashboard`, {
         params: { month: selectedMonth }
       });
       setDashboardData(res.data);
@@ -272,7 +822,7 @@ function App() {
 
   const fetchCompetitorAnalytics = async () => {
     try {
-      const res = await axios.get(`${API_BASE}/analytics/competitors`, {
+      const res = await api.get(`/analytics/competitors`, {
         params: { month: selectedMonth, compareMonth }
       });
       setCompetitorAnalytics(res.data);
@@ -283,7 +833,7 @@ function App() {
 
   const fetchClientAnalytics = async () => {
     try {
-      const res = await axios.get(`${API_BASE}/analytics/clients`, {
+      const res = await api.get(`/analytics/clients`, {
         params: { month: selectedMonth, compareMonth }
       });
       setClientAnalytics(res.data);
@@ -294,7 +844,7 @@ function App() {
 
   const fetchCompanyComparison = async () => {
     try {
-      const res = await axios.get(`${API_BASE}/analytics/company-comparison`, {
+      const res = await api.get(`/analytics/company-comparison`, {
         params: { month: selectedMonth }
       });
       setCompanyComparison(res.data);
@@ -305,7 +855,7 @@ function App() {
 
   const fetchTrends = async () => {
     try {
-      const res = await axios.get(`${API_BASE}/analytics/trends`);
+      const res = await api.get(`/analytics/trends`);
       setTrends(res.data);
     } catch (err) {
       console.error('Error fetching trends:', err);
@@ -320,7 +870,7 @@ function App() {
     }
     setSearchingCompetitors(true);
     try {
-      const res = await axios.get(`${API_BASE}/competitors/search`, { params: { q: query } });
+      const res = await api.get(`/competitors/search`, { params: { q: query } });
       setCompetitorSuggestions(res.data);
     } catch (err) {
       console.error('Search error:', err);
@@ -337,7 +887,7 @@ function App() {
     }
     setSearchingClients(true);
     try {
-      const res = await axios.get(`${API_BASE}/clients/search`, { params: { q: query } });
+      const res = await api.get(`/clients/search`, { params: { q: query } });
       setClientSuggestions(res.data);
     } catch (err) {
       console.error('Search error:', err);
@@ -379,7 +929,7 @@ function App() {
     if (namesToAdd.length === 0) return;
     
     try {
-      const res = await axios.post(`${API_BASE}/competitors`, { names: namesToAdd });
+      const res = await api.post(`/competitors`, { names: namesToAdd });
       if (res.data.added.length > 0) {
         setNewCompetitor('');
         setSelectedCompetitors([]);
@@ -399,7 +949,7 @@ function App() {
   const handleDeleteCompetitor = async (id) => {
     if (!confirm('Remove this competitor from tracking?')) return;
     try {
-      await axios.delete(`${API_BASE}/competitors/${id}`);
+      await api.delete(`/competitors/${id}`);
       fetchCompetitors();
       fetchCompetitorAnalytics();
       fetchCompanyComparison();
@@ -414,7 +964,7 @@ function App() {
     if (namesToAdd.length === 0) return;
     
     try {
-      const res = await axios.post(`${API_BASE}/clients`, { names: namesToAdd });
+      const res = await api.post(`/clients`, { names: namesToAdd });
       if (res.data.added.length > 0) {
         setNewClient('');
         setSelectedClients([]);
@@ -433,7 +983,7 @@ function App() {
   const handleDeleteClient = async (id) => {
     if (!confirm('Remove this client from tracking?')) return;
     try {
-      await axios.delete(`${API_BASE}/clients/${id}`);
+      await api.delete(`/clients/${id}`);
       fetchClients();
       fetchClientAnalytics();
     } catch (err) {
@@ -443,7 +993,7 @@ function App() {
 
   const handleUpdateCompany = async () => {
     try {
-      await axios.put(`${API_BASE}/company`, { company_name: companyName });
+      await api.put(`/company`, { company_name: companyName });
       fetchCompanyComparison();
       alert('Company name updated!');
     } catch (err) {
@@ -463,7 +1013,7 @@ function App() {
     formData.append('dataType', uploadType);
 
     try {
-      const res = await axios.post(`${API_BASE}/upload`, formData, {
+      const res = await api.post(`/upload`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' }
       });
       setUploadStatus({
@@ -512,7 +1062,7 @@ function App() {
   const fetchEntityDetails = async (entity, type) => {
     setLoadingDetails(true);
     try {
-      const res = await axios.get(`${API_BASE}/analytics/entity-details`, {
+      const res = await api.get(`/analytics/entity-details`, {
         params: { entity, type, month: selectedMonth }
       });
       setDetailView({ entity, type, data: res.data });
@@ -533,7 +1083,7 @@ function App() {
     
     setFeedbackSubmitting(true);
     try {
-      await axios.post(`${API_BASE}/feedback`, {
+      await api.post(`/feedback`, {
         ...feedbackData,
         page: activeTab
       });
@@ -551,7 +1101,7 @@ function App() {
   const fetchProspectiveClients = async () => {
     setLoadingIntelligence(true);
     try {
-      const res = await axios.get(`${API_BASE}/intelligence/prospective-clients`);
+      const res = await api.get(`/intelligence/prospective-clients`);
       setProspectiveClients(res.data);
     } catch (err) {
       console.error('Error fetching prospective clients:', err);
@@ -563,7 +1113,7 @@ function App() {
   const fetchCrossSellData = async () => {
     setLoadingIntelligence(true);
     try {
-      const res = await axios.get(`${API_BASE}/intelligence/cross-sell`);
+      const res = await api.get(`/intelligence/cross-sell`);
       setCrossSellData(res.data);
     } catch (err) {
       console.error('Error fetching cross-sell data:', err);
@@ -662,7 +1212,7 @@ Generated by Export Data Explorer
       if (consignees.trim()) params.append('consignees', consignees);
       if (selectedMonth) params.append('month', selectedMonth);
       
-      const res = await axios.get(`${API_BASE}/custom-report?${params.toString()}`);
+      const res = await api.get(`/custom-report?${params.toString()}`);
       setCustomReportData(res.data);
     } catch (err) {
       console.error('Error fetching custom report:', err);
@@ -703,7 +1253,7 @@ Generated by Export Data Explorer
     }
     setLoadingMonthlyComparison(true);
     try {
-      const res = await axios.get(`${API_BASE}/monthly-comparison`, {
+      const res = await api.get(`/monthly-comparison`, {
         params: { currentMonth: selectedMonth, previousMonth: compareMonth }
       });
       setMonthlyComparisonData(res.data);
@@ -725,7 +1275,7 @@ Generated by Export Data Explorer
   const fetchBenchmarkData = async () => {
     setLoadingBenchmark(true);
     try {
-      const res = await axios.get(`${API_BASE}/benchmarking`, {
+      const res = await api.get(`/benchmarking`, {
         params: { month: selectedMonth }
       });
       setBenchmarkData(res.data);
@@ -837,7 +1387,36 @@ Generated by Export Data Explorer
             active={activeTab === 'settings'}
             onClick={() => setActiveTab('settings')}
           />
+          {currentUser?.role === 'admin' && (
+            <NavItem
+              icon={UserCog}
+              label={sidebarOpen ? "Users" : ""}
+              active={activeTab === 'users'}
+              onClick={() => setActiveTab('users')}
+            />
+          )}
         </nav>
+
+        {/* User Info & Logout */}
+        <div className="border-t border-white/5 p-4">
+          {sidebarOpen && (
+            <div className="mb-3 px-2">
+              <p className="text-white text-sm font-medium truncate">{currentUser?.full_name || currentUser?.username}</p>
+              <p className="text-slate-500 text-xs flex items-center gap-1">
+                {currentUser?.role === 'admin' ? <Shield className="w-3 h-3" /> : <User className="w-3 h-3" />}
+                {currentUser?.role === 'admin' ? 'Administrator' : 'User'}
+              </p>
+            </div>
+          )}
+          <button
+            onClick={onLogout}
+            className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-rose-400 hover:bg-rose-500/10 transition-all"
+            title="Logout"
+          >
+            <LogOut className="w-5 h-5" />
+            {sidebarOpen && <span className="font-medium">Logout</span>}
+          </button>
+        </div>
 
         {/* Sidebar Toggle */}
         <button
@@ -869,6 +1448,7 @@ Generated by Export Data Explorer
                 {activeTab === 'benchmarking' && 'Benchmark AGNA against competitors and client vendors'}
                 {activeTab === 'custom-reports' && 'Generate custom reports by country or company'}
                 {activeTab === 'settings' && 'Configure your company and preferences'}
+                {activeTab === 'users' && 'Manage user accounts and permissions'}
               </p>
             </div>
             <div className="flex items-center gap-4">
@@ -2846,6 +3426,9 @@ Generated by Export Data Explorer
                 </div>
               </div>
 
+              {/* Change Password */}
+              <ChangePassword />
+
               {/* About */}
               <div className="glass-card rounded-xl p-6">
                 <h3 className="text-lg font-semibold text-white mb-4">About EDE</h3>
@@ -2858,6 +3441,13 @@ Generated by Export Data Explorer
                   <p className="text-xs text-slate-500">Version 1.0.0</p>
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* Users Tab (Admin Only) */}
+          {activeTab === 'users' && currentUser?.role === 'admin' && (
+            <div className="animate-fade-in">
+              <UserManagement currentUser={currentUser} />
             </div>
           )}
         </div>
