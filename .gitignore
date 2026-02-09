@@ -7,6 +7,11 @@ client/dist/
 
 # Database (will be created fresh on deployment)
 server/database.sqlite
+local.db
+local.db-*
+
+# Excel data files
+Data/
 
 # Uploads
 server/uploads/

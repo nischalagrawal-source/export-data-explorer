@@ -3,11 +3,16 @@ import cors from 'cors';
 import multer from 'multer';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { createClient } from '@libsql/client';
 import XLSX from 'xlsx';
 import fs from 'fs';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import dotenv from 'dotenv';
+
+// Load environment variables
+dotenv.config();
+
+import { all, get, run, initDatabase } from './db-pg.js';
 
 // JWT Secret - use environment variable in production
 const JWT_SECRET = process.env.JWT_SECRET || 'ede-secret-key-change-in-production-2024';
@@ -42,27 +47,20 @@ const upload = multer({
   limits: { fileSize: 50 * 1024 * 1024 } // 50MB limit
 });
 
-// Database setup - Turso (cloud SQLite)
-// Set these environment variables:
-// TURSO_DATABASE_URL - Your Turso database URL
-// TURSO_AUTH_TOKEN - Your Turso auth token
-const dbUrl = process.env.TURSO_DATABASE_URL || 'file:local.db';
-const authToken = process.env.TURSO_AUTH_TOKEN;
+// Database setup - Neon PostgreSQL
+// Set DATABASE_URL environment variable
+const dbUrl = process.env.DATABASE_URL;
 
-console.log('📁 Database URL:', dbUrl.includes('turso') ? 'Turso Cloud' : 'Local SQLite');
-console.log('🔑 Auth Token:', authToken ? 'Set' : 'NOT SET');
+console.log('📁 Database:', dbUrl ? 'Neon PostgreSQL' : 'NOT CONFIGURED');
 
-let db;
 let dbInitialized = false;
-let autoSave = true; // For bulk import performance
 
 // Debug endpoint - placed before other routes
 app.get('/api/debug', (req, res) => {
   res.json({
     status: 'ok',
-    database: dbUrl.includes('turso') ? 'Turso Cloud' : 'Local SQLite',
+    database: dbUrl ? 'Neon PostgreSQL' : 'NOT CONFIGURED',
     dbInitialized,
-    authToken: authToken ? 'Set' : 'NOT SET',
     nodeEnv: process.env.NODE_ENV,
     uploadsDir: uploadsDir
   });
@@ -290,149 +288,18 @@ app.use('/api', (req, res, next) => {
   authenticateToken(req, res, next);
 });
 
-// Helper to run queries (async)
-const run = async (sql, params = []) => {
-  try {
-    await db.execute({ sql, args: params });
-  } catch (err) {
-    throw err;
-  }
-};
+// Database helper functions imported from db-pg.js
+// run, get, all are now imported at the top
 
-const get = async (sql, params = []) => {
-  try {
-    const result = await db.execute({ sql, args: params });
-    return result.rows.length > 0 ? result.rows[0] : null;
-  } catch (err) {
-    console.error('DB get error:', err.message);
-    return null;
-  }
-};
-
-const all = async (sql, params = []) => {
-  try {
-    const result = await db.execute({ sql, args: params });
-    return result.rows;
-  } catch (err) {
-    console.error('DB all error:', err.message);
-    return [];
-  }
-};
-
-// Initialize database
+// Initialize database (PostgreSQL/Neon)
 async function initDb() {
-  // Create Turso client
-  db = createClient({
-    url: dbUrl,
-    authToken: authToken
-  });
-
-  // Initialize tables
-  await db.execute(`
-    CREATE TABLE IF NOT EXISTS competitors (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT UNIQUE NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      active INTEGER DEFAULT 1
-    )
-  `);
-
-  await db.execute(`
-    CREATE TABLE IF NOT EXISTS clients (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT UNIQUE NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      active INTEGER DEFAULT 1
-    )
-  `);
-
-  await db.execute(`
-    CREATE TABLE IF NOT EXISTS exports (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      declaration_id TEXT NOT NULL,
-      exporter_name TEXT,
-      consignee_name TEXT,
-      product_description TEXT,
-      product_category TEXT,
-      data_type TEXT CHECK(data_type IN ('fruits', 'vegetables')),
-      hs_code TEXT,
-      quantity REAL,
-      unit TEXT,
-      fob_value REAL,
-      fob_currency TEXT DEFAULT 'USD',
-      port_of_loading TEXT,
-      port_of_discharge TEXT,
-      country_of_destination TEXT,
-      shipment_date DATE,
-      month_year TEXT,
-      upload_batch TEXT,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-  
-  // Create unique index on declaration_id + shipment_date + product_description + data_type
-  await db.execute(`
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_exports_unique 
-    ON exports(declaration_id, shipment_date, product_description, hs_code, quantity, fob_value)
-  `);
-
-  await db.execute(`
-    CREATE TABLE IF NOT EXISTS company_info (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      company_name TEXT NOT NULL DEFAULT 'AGNA',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  // Create indexes
-  await db.execute(`CREATE INDEX IF NOT EXISTS idx_exports_exporter ON exports(exporter_name)`);
-  await db.execute(`CREATE INDEX IF NOT EXISTS idx_exports_consignee ON exports(consignee_name)`);
-  await db.execute(`CREATE INDEX IF NOT EXISTS idx_exports_date ON exports(shipment_date)`);
-  await db.execute(`CREATE INDEX IF NOT EXISTS idx_exports_month ON exports(month_year)`);
-  await db.execute(`CREATE INDEX IF NOT EXISTS idx_exports_declaration ON exports(declaration_id)`);
-
-  // Create feedback table
-  await db.execute(`
-    CREATE TABLE IF NOT EXISTS feedback (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_name TEXT,
-      feedback_type TEXT,
-      message TEXT NOT NULL,
-      page TEXT,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  // Create users table for authentication
-  await db.execute(`
-    CREATE TABLE IF NOT EXISTS users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      username TEXT UNIQUE NOT NULL,
-      password_hash TEXT NOT NULL,
-      role TEXT CHECK(role IN ('admin', 'user')) DEFAULT 'user',
-      full_name TEXT,
-      active INTEGER DEFAULT 1,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      last_login DATETIME
-    )
-  `);
-
-  // Create default admin account if no users exist
-  const userCount = await get('SELECT COUNT(*) as count FROM users');
-  if (!userCount || userCount.count === 0) {
-    const adminPassword = await bcrypt.hash('admin123', 10);
-    await run('INSERT INTO users (username, password_hash, role, full_name) VALUES (?, ?, ?, ?)', 
-      ['admin', adminPassword, 'admin', 'Administrator']);
-    console.log('📋 Default admin account created (username: admin, password: admin123)');
+  const success = await initDatabase();
+  if (success) {
+    console.log('📦 Database initialized (Neon PostgreSQL)');
+  } else {
+    console.log('⚠️ Database not available');
   }
-
-  // Insert default company if not exists
-  const companyExists = await get('SELECT COUNT(*) as count FROM company_info');
-  if (!companyExists || companyExists.count === 0) {
-    await run('INSERT INTO company_info (company_name) VALUES (?)', ['AGNA ORG AGROVILLA INDIA PRIVATE LIMITED']);
-  }
-
-  console.log('📦 Database initialized');
+  return success;
 }
 
 // ============= COMPETITORS ROUTES =============
