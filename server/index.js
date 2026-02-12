@@ -516,6 +516,22 @@ const findColumnValue = (row, possibleNames) => {
   return '';
 };
 
+// ============= UPLOAD STATUS TRACKING =============
+const uploadJobs = new Map();
+
+// Upload status endpoint
+app.get('/api/upload/status/:jobId', (req, res) => {
+  const job = uploadJobs.get(req.params.jobId);
+  if (!job) {
+    return res.status(404).json({ error: 'Upload job not found' });
+  }
+  res.json(job);
+  // Clean up completed jobs after they're read
+  if (job.status === 'completed' || job.status === 'error') {
+    setTimeout(() => uploadJobs.delete(req.params.jobId), 60000);
+  }
+});
+
 // ============= FILE UPLOAD ROUTE =============
 app.post('/api/upload', upload.single('file'), async (req, res) => {
   console.log('📤 Upload request received');
@@ -555,291 +571,340 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
     }
 
     const uploadBatch = `${Date.now()}-${dataType}`;
-    let inserted = 0;
-    let skipped = 0;
-    let noIdCount = 0;
+    const jobId = uploadBatch;
     
-    // Bulk import - process in batches for performance
+    // Track the upload job
+    uploadJobs.set(jobId, {
+      status: 'processing',
+      totalRows: data.length,
+      inserted: 0,
+      skipped: 0,
+      noIdCount: 0,
+      dataType,
+      columnsFound: excelColumns,
+      startedAt: new Date().toISOString()
+    });
 
-    // Column name variations for Indian export data
-    const declarationIdNames = [
-      'Declaration ID', 'DECLARATION_ID', 'declaration_id', 'Dec ID',
-      'Declaration No', 'DECLARATION_NO', 'declaration_no', 'Declaration_No',
-      'DeclarationNo', 'DECLARATIONNO', 'Dec No', 'DEC_NO', 'DecNo',
-      'SB No', 'SB_No', 'SB NO', 'SB_NO', 'SBNO', 'Sb No', 
-      'Shipping Bill No', 'SHIPPING_BILL_NO', 'Shipping Bill Number',
-      'Bill No', 'BILL_NO', 'Bill Number', 'Reference No', 'Ref No',
-      'Invoice No', 'INVOICE_NO', 'Invoice Number', 'ID', 'Sr No', 'SrNo',
-      'S.No', 'SNO', 'Record ID', 'RECORD_ID', 'Unique ID'
-    ];
-    
-    const exporterNames = [
-      'Exporter Name', 'EXPORTER_NAME', 'exporter_name', 'Exporter',
-      'EXPORTER', 'Indian Exporter', 'INDIAN_EXPORTER', 'Shipper',
-      'SHIPPER', 'Shipper Name', 'Seller', 'SELLER', 'Seller Name',
-      'Company', 'Company Name', 'COMPANY_NAME', 'Supplier', 'SUPPLIER'
-    ];
-    
-    const consigneeNames = [
-      'Consignee Name', 'CONSIGNEE_NAME', 'consignee_name', 'Consignee',
-      'CONSIGNEE', 'Buyer', 'BUYER', 'Buyer Name', 'BUYER_NAME',
-      'Foreign Buyer', 'FOREIGN_BUYER', 'Importer', 'IMPORTER',
-      'Importer Name', 'Customer', 'CUSTOMER', 'Customer Name',
-      'Consinee Name', 'CONSINEE_NAME', 'Consinee', 'CONSINEE'
-    ];
-    
-    const productNames = [
-      'Product Description', 'PRODUCT_DESCRIPTION', 'product_description',
-      'Product', 'PRODUCT', 'Item', 'ITEM', 'Item Description',
-      'ITEM_DESCRIPTION', 'Description', 'DESCRIPTION', 'Goods',
-      'GOODS', 'Goods Description', 'GOODS_DESCRIPTION', 'Goods_Description',
-      'Product Name', 'PRODUCT_NAME', 'Commodity', 'COMMODITY', 
-      'HS Description', 'Item Name', 'ItemDescription'
-    ];
-    
-    const hsCodeNames = [
-      'HS Code', 'HS_CODE', 'hs_code', 'HSCode', 'HSCODE', 'HS',
-      'ITC Code', 'ITC_CODE', 'ITCCode', 'ITC HS', 'ITC_HS',
-      'Tariff Code', 'TARIFF_CODE', 'Chapter', 'CHAPTER'
-    ];
-    
-    const quantityNames = [
-      'Quantity', 'QUANTITY', 'quantity', 'Qty', 'QTY', 'qty',
-      'Unit Quantity', 'UNIT_QUANTITY', 'Net Quantity', 'NET_QUANTITY',
-      'Weight', 'WEIGHT', 'Net Weight', 'NET_WEIGHT', 'Gross Weight'
-    ];
-    
-    const unitNames = [
-      'Unit', 'UNIT', 'unit', 'UQC', 'UOM', 'Unit of Measure',
-      'UNIT_OF_MEASURE', 'Quantity Unit', 'QUANTITY_UNIT'
-    ];
-    
-    const fobNames = [
-      'FOB Value', 'FOB_VALUE', 'fob_value', 'FOB', 'Fob',
-      'FOB USD', 'FOB_USD', 'Fob Usd', 'FOB Usd', 'Fob USD',
-      'FOB INR', 'FOB_INR', 'Fob Inr', 'Value',
-      'VALUE', 'Invoice Value', 'INVOICE_VALUE', 'Total Value',
-      'TOTAL_VALUE', 'Amount', 'AMOUNT', 'Price', 'PRICE',
-      'Value USD', 'Value INR', 'FOB (USD)', 'FOB (INR)'
-    ];
-    
-    const currencyNames = [
-      'Currency', 'CURRENCY', 'currency', 'Curr', 'CURR',
-      'Currency Code', 'CURRENCY_CODE'
-    ];
-    
-    const portLoadingNames = [
-      'Port of Loading', 'PORT_OF_LOADING', 'port_of_loading',
-      'Indian Port', 'INDIAN_PORT', 'Loading Port', 'LOADING_PORT',
-      'Port', 'PORT', 'Origin Port', 'ORIGIN_PORT', 'From Port',
-      'Departure Port', 'DEPARTURE_PORT', 'POL', 'Port Code'
-    ];
-    
-    const portDischargeNames = [
-      'Port of Discharge', 'PORT_OF_DISCHARGE', 'port_of_discharge',
-      'Foreign Port', 'FOREIGN_PORT', 'Discharge Port', 'DISCHARGE_PORT',
-      'Destination Port', 'DESTINATION_PORT', 'To Port', 'POD',
-      'Arrival Port', 'ARRIVAL_PORT', 'Final Port'
-    ];
-    
-    const countryNames = [
-      'Country', 'COUNTRY', 'country', 'Destination Country',
-      'DESTINATION_COUNTRY', 'Country of Destination', 'COUNTRY_OF_DESTINATION',
-      'Destination', 'DESTINATION', 'Foreign Country', 'FOREIGN_COUNTRY',
-      'Importing Country', 'IMPORTING_COUNTRY', 'To Country'
-    ];
-    
-    const dateNames = [
-      'Shipment Date', 'SHIPMENT_DATE', 'shipment_date', 'Date', 'DATE',
-      'SB Date', 'SB_DATE', 'Shipping Date', 'SHIPPING_DATE',
-      'Bill Date', 'BILL_DATE', 'Export Date', 'EXPORT_DATE',
-      'Invoice Date', 'INVOICE_DATE', 'Dispatch Date', 'DISPATCH_DATE'
-    ];
-
-    let debugCount = 0;
-    const totalRows = data.length;
-    
-    // Parse all rows first, then batch insert for performance
-    console.log(`Processing ${totalRows} rows...`);
-    
-    const parsedRows = [];
-    
-    for (const row of data) {
-      // Map Excel columns to database fields using flexible matching
-      const declarationId = findColumnValue(row, declarationIdNames);
-      const exporterName = findColumnValue(row, exporterNames);
-      const consigneeName = findColumnValue(row, consigneeNames);
-      const productDesc = findColumnValue(row, productNames);
-      const hsCode = findColumnValue(row, hsCodeNames);
-      const quantity = parseFloat(findColumnValue(row, quantityNames) || 0);
-      const unit = findColumnValue(row, unitNames) || 'KGS';
-      const fobValue = parseFloat(String(findColumnValue(row, fobNames) || 0).replace(/[^0-9.-]/g, '')) || 0;
-      const fobCurrency = findColumnValue(row, currencyNames) || 'USD';
-      const portLoading = findColumnValue(row, portLoadingNames);
-      const portDischarge = findColumnValue(row, portDischargeNames);
-      const countryDest = findColumnValue(row, countryNames);
-      
-      // Debug first 3 rows
-      if (debugCount < 3) {
-        console.log(`Row ${debugCount + 1} extracted values:`, {
-          declarationId,
-          exporterName,
-          consigneeName,
-          productDesc: productDesc?.substring(0, 50),
-          fobValue,
-          hsCode
-        });
-        debugCount++;
-      }
-      
-      // Parse date
-      let shipmentDate = null;
-      let monthYear = null;
-      const dateValue = findColumnValue(row, dateNames);
-      if (dateValue) {
-        if (typeof dateValue === 'number') {
-          // Excel serial date
-          const date = XLSX.SSF.parse_date_code(dateValue);
-          if (date) {
-            shipmentDate = `${date.y}-${String(date.m).padStart(2, '0')}-${String(date.d).padStart(2, '0')}`;
-            monthYear = `${date.y}-${String(date.m).padStart(2, '0')}`;
-          }
-        } else {
-          // Try parsing various date formats
-          const dateStr = String(dateValue);
-          let parsed = new Date(dateStr);
-          
-          // Try DD-MM-YYYY or DD/MM/YYYY format
-          if (isNaN(parsed)) {
-            const parts = dateStr.split(/[-\/]/);
-            if (parts.length === 3) {
-              // Assume DD-MM-YYYY
-              parsed = new Date(parts[2], parts[1] - 1, parts[0]);
-            }
-          }
-          
-          if (!isNaN(parsed) && parsed.getFullYear() > 1900) {
-            shipmentDate = parsed.toISOString().split('T')[0];
-            monthYear = `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, '0')}`;
-          }
-        }
-      }
-
-      // Use a combination of fields to create unique ID if no declaration ID
-      let uniqueId = declarationId;
-      if (!uniqueId || uniqueId === '') {
-        // Create a composite key from available data
-        const composite = `${exporterName}-${consigneeName}-${productDesc}-${dateValue}-${fobValue}`;
-        if (composite !== '----0') {
-          uniqueId = `AUTO-${Buffer.from(composite).toString('base64').slice(0, 20)}-${Math.random().toString(36).slice(2, 8)}`;
-        }
-      }
-
-      if (uniqueId && uniqueId !== '') {
-        parsedRows.push([
-          uniqueId.toString().trim(),
-          (exporterName || '').toString().trim().toUpperCase(),
-          (consigneeName || '').toString().trim().toUpperCase(),
-          (productDesc || '').toString().trim(),
-          dataType,
-          dataType,
-          String(hsCode || '').trim(),
-          quantity || 0,
-          (unit || 'KGS').toString().trim(),
-          fobValue || 0,
-          (fobCurrency || 'USD').toString().trim(),
-          (portLoading || '').toString().trim(),
-          (portDischarge || '').toString().trim(),
-          (countryDest || '').toString().trim(),
-          shipmentDate,
-          monthYear,
-          uploadBatch
-        ]);
-      } else {
-        noIdCount++;
-        skipped++;
-      }
-    }
-    
-    // Batch insert using multi-row VALUES for much better performance
-    const BATCH_SIZE = 200;
-    const columns = [
-      'declaration_id', 'exporter_name', 'consignee_name', 'product_description',
-      'product_category', 'data_type', 'hs_code', 'quantity', 'unit', 'fob_value',
-      'fob_currency', 'port_of_loading', 'port_of_discharge', 'country_of_destination',
-      'shipment_date', 'month_year', 'upload_batch'
-    ];
-    const colCount = columns.length;
-    const pgPool = getPool();
-    
-    console.log(`Inserting ${parsedRows.length} rows in batches of ${BATCH_SIZE}...`);
-    
-    for (let i = 0; i < parsedRows.length; i += BATCH_SIZE) {
-      const batch = parsedRows.slice(i, i + BATCH_SIZE);
-      const values = [];
-      const params = [];
-      let paramIndex = 1;
-      
-      for (const rowData of batch) {
-        const rowPlaceholders = [];
-        for (let c = 0; c < colCount; c++) {
-          params.push(rowData[c]);
-          rowPlaceholders.push(`$${paramIndex++}`);
-        }
-        values.push(`(${rowPlaceholders.join(', ')})`);
-      }
-      
-      try {
-        const sql = `INSERT INTO ede_exports (${columns.join(', ')}) VALUES ${values.join(', ')}`;
-        await pgPool.query(sql, params);
-        inserted += batch.length;
-      } catch (batchErr) {
-        // If batch fails, try inserting rows individually to identify problematic rows
-        console.error(`Batch insert error at rows ${i}-${i + batch.length}:`, batchErr.message);
-        for (const rowData of batch) {
-          try {
-            await run(`
-              INSERT INTO exports (
-                declaration_id, exporter_name, consignee_name, product_description,
-                product_category, data_type, hs_code, quantity, unit, fob_value,
-                fob_currency, port_of_loading, port_of_discharge, country_of_destination,
-                shipment_date, month_year, upload_batch
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            `, rowData);
-            inserted++;
-          } catch (singleErr) {
-            if (skipped < 5) {
-              console.error(`Row insert error: ${singleErr.message}`);
-            }
-            skipped++;
-          }
-        }
-      }
-      
-      if ((i + BATCH_SIZE) % 5000 < BATCH_SIZE) {
-        console.log(`Progress: ${Math.min(i + BATCH_SIZE, parsedRows.length)}/${parsedRows.length} rows processed (${inserted} inserted, ${skipped} skipped)...`);
-      }
-    }
-    
-    console.log(`Import complete: ${inserted} inserted, ${skipped} skipped, ${noIdCount} no ID`);
-
-    // No need to clean up - using memory storage (no file on disk)
-
+    // Return immediately to avoid Render timeout
     res.json({
       success: true,
-      message: `Processed ${data.length} rows`,
-      inserted,
-      skipped,
-      noIdCount,
+      message: `Upload received. Processing ${data.length} rows in background...`,
+      jobId,
+      totalRows: data.length,
       dataType,
       columnsFound: excelColumns
     });
+
+    // Process in background (after response is sent)
+    processUploadInBackground(data, dataType, uploadBatch, jobId, excelColumns).catch(err => {
+      console.error('Background upload processing error:', err);
+      uploadJobs.set(jobId, {
+        ...uploadJobs.get(jobId),
+        status: 'error',
+        error: err.message
+      });
+    });
+
   } catch (err) {
     console.error('Upload error:', err);
     console.error('Error stack:', err.stack);
-    res.status(500).json({ error: err.message, stack: err.stack });
+    res.status(500).json({ error: err.message });
   }
 });
+
+// Background upload processing function
+async function processUploadInBackground(data, dataType, uploadBatch, jobId, excelColumns) {
+  let inserted = 0;
+  let skipped = 0;
+  let noIdCount = 0;
+
+  // Column name variations for Indian export data
+  const declarationIdNames = [
+    'Declaration ID', 'DECLARATION_ID', 'declaration_id', 'Dec ID',
+    'Declaration No', 'DECLARATION_NO', 'declaration_no', 'Declaration_No',
+    'DeclarationNo', 'DECLARATIONNO', 'Dec No', 'DEC_NO', 'DecNo',
+    'SB No', 'SB_No', 'SB NO', 'SB_NO', 'SBNO', 'Sb No', 
+    'Shipping Bill No', 'SHIPPING_BILL_NO', 'Shipping Bill Number',
+    'Bill No', 'BILL_NO', 'Bill Number', 'Reference No', 'Ref No',
+    'Invoice No', 'INVOICE_NO', 'Invoice Number', 'ID', 'Sr No', 'SrNo',
+    'S.No', 'SNO', 'Record ID', 'RECORD_ID', 'Unique ID'
+  ];
+  
+  const exporterNames = [
+    'Exporter Name', 'EXPORTER_NAME', 'exporter_name', 'Exporter',
+    'EXPORTER', 'Indian Exporter', 'INDIAN_EXPORTER', 'Shipper',
+    'SHIPPER', 'Shipper Name', 'Seller', 'SELLER', 'Seller Name',
+    'Company', 'Company Name', 'COMPANY_NAME', 'Supplier', 'SUPPLIER'
+  ];
+  
+  const consigneeNames = [
+    'Consignee Name', 'CONSIGNEE_NAME', 'consignee_name', 'Consignee',
+    'CONSIGNEE', 'Buyer', 'BUYER', 'Buyer Name', 'BUYER_NAME',
+    'Foreign Buyer', 'FOREIGN_BUYER', 'Importer', 'IMPORTER',
+    'Importer Name', 'Customer', 'CUSTOMER', 'Customer Name',
+    'Consinee Name', 'CONSINEE_NAME', 'Consinee', 'CONSINEE'
+  ];
+  
+  const productNames = [
+    'Product Description', 'PRODUCT_DESCRIPTION', 'product_description',
+    'Product', 'PRODUCT', 'Item', 'ITEM', 'Item Description',
+    'ITEM_DESCRIPTION', 'Description', 'DESCRIPTION', 'Goods',
+    'GOODS', 'Goods Description', 'GOODS_DESCRIPTION', 'Goods_Description',
+    'Product Name', 'PRODUCT_NAME', 'Commodity', 'COMMODITY', 
+    'HS Description', 'Item Name', 'ItemDescription'
+  ];
+  
+  const hsCodeNames = [
+    'HS Code', 'HS_CODE', 'hs_code', 'HSCode', 'HSCODE', 'HS',
+    'ITC Code', 'ITC_CODE', 'ITCCode', 'ITC HS', 'ITC_HS',
+    'Tariff Code', 'TARIFF_CODE', 'Chapter', 'CHAPTER'
+  ];
+  
+  const quantityNames = [
+    'Quantity', 'QUANTITY', 'quantity', 'Qty', 'QTY', 'qty',
+    'Unit Quantity', 'UNIT_QUANTITY', 'Net Quantity', 'NET_QUANTITY',
+    'Weight', 'WEIGHT', 'Net Weight', 'NET_WEIGHT', 'Gross Weight'
+  ];
+  
+  const unitNames = [
+    'Unit', 'UNIT', 'unit', 'UQC', 'UOM', 'Unit of Measure',
+    'UNIT_OF_MEASURE', 'Quantity Unit', 'QUANTITY_UNIT'
+  ];
+  
+  const fobNames = [
+    'FOB Value', 'FOB_VALUE', 'fob_value', 'FOB', 'Fob',
+    'FOB USD', 'FOB_USD', 'Fob Usd', 'FOB Usd', 'Fob USD',
+    'FOB INR', 'FOB_INR', 'Fob Inr', 'Value',
+    'VALUE', 'Invoice Value', 'INVOICE_VALUE', 'Total Value',
+    'TOTAL_VALUE', 'Amount', 'AMOUNT', 'Price', 'PRICE',
+    'Value USD', 'Value INR', 'FOB (USD)', 'FOB (INR)'
+  ];
+  
+  const currencyNames = [
+    'Currency', 'CURRENCY', 'currency', 'Curr', 'CURR',
+    'Currency Code', 'CURRENCY_CODE'
+  ];
+  
+  const portLoadingNames = [
+    'Port of Loading', 'PORT_OF_LOADING', 'port_of_loading',
+    'Indian Port', 'INDIAN_PORT', 'Loading Port', 'LOADING_PORT',
+    'Port', 'PORT', 'Origin Port', 'ORIGIN_PORT', 'From Port',
+    'Departure Port', 'DEPARTURE_PORT', 'POL', 'Port Code'
+  ];
+  
+  const portDischargeNames = [
+    'Port of Discharge', 'PORT_OF_DISCHARGE', 'port_of_discharge',
+    'Foreign Port', 'FOREIGN_PORT', 'Discharge Port', 'DISCHARGE_PORT',
+    'Destination Port', 'DESTINATION_PORT', 'To Port', 'POD',
+    'Arrival Port', 'ARRIVAL_PORT', 'Final Port'
+  ];
+  
+  const countryNames = [
+    'Country', 'COUNTRY', 'country', 'Destination Country',
+    'DESTINATION_COUNTRY', 'Country of Destination', 'COUNTRY_OF_DESTINATION',
+    'Destination', 'DESTINATION', 'Foreign Country', 'FOREIGN_COUNTRY',
+    'Importing Country', 'IMPORTING_COUNTRY', 'To Country'
+  ];
+  
+  const dateNames = [
+    'Shipment Date', 'SHIPMENT_DATE', 'shipment_date', 'Date', 'DATE',
+    'SB Date', 'SB_DATE', 'Shipping Date', 'SHIPPING_DATE',
+    'Bill Date', 'BILL_DATE', 'Export Date', 'EXPORT_DATE',
+    'Invoice Date', 'INVOICE_DATE', 'Dispatch Date', 'DISPATCH_DATE'
+  ];
+
+  let debugCount = 0;
+  const totalRows = data.length;
+  
+  // Parse all rows first, then batch insert for performance
+  console.log(`[BG] Processing ${totalRows} rows...`);
+  
+  const parsedRows = [];
+  
+  for (const row of data) {
+    // Map Excel columns to database fields using flexible matching
+    const declarationId = findColumnValue(row, declarationIdNames);
+    const exporterName = findColumnValue(row, exporterNames);
+    const consigneeName = findColumnValue(row, consigneeNames);
+    const productDesc = findColumnValue(row, productNames);
+    const hsCode = findColumnValue(row, hsCodeNames);
+    const quantity = parseFloat(findColumnValue(row, quantityNames) || 0);
+    const unit = findColumnValue(row, unitNames) || 'KGS';
+    const fobValue = parseFloat(String(findColumnValue(row, fobNames) || 0).replace(/[^0-9.-]/g, '')) || 0;
+    const fobCurrency = findColumnValue(row, currencyNames) || 'USD';
+    const portLoading = findColumnValue(row, portLoadingNames);
+    const portDischarge = findColumnValue(row, portDischargeNames);
+    const countryDest = findColumnValue(row, countryNames);
+    
+    // Debug first 3 rows
+    if (debugCount < 3) {
+      console.log(`[BG] Row ${debugCount + 1} extracted values:`, {
+        declarationId,
+        exporterName,
+        consigneeName,
+        productDesc: productDesc?.substring(0, 50),
+        fobValue,
+        hsCode
+      });
+      debugCount++;
+    }
+    
+    // Parse date
+    let shipmentDate = null;
+    let monthYear = null;
+    const dateValue = findColumnValue(row, dateNames);
+    if (dateValue) {
+      if (typeof dateValue === 'number') {
+        // Excel serial date
+        const date = XLSX.SSF.parse_date_code(dateValue);
+        if (date) {
+          shipmentDate = `${date.y}-${String(date.m).padStart(2, '0')}-${String(date.d).padStart(2, '0')}`;
+          monthYear = `${date.y}-${String(date.m).padStart(2, '0')}`;
+        }
+      } else {
+        // Try parsing various date formats
+        const dateStr = String(dateValue);
+        let parsed = new Date(dateStr);
+        
+        // Try DD-MM-YYYY or DD/MM/YYYY format
+        if (isNaN(parsed)) {
+          const parts = dateStr.split(/[-\/]/);
+          if (parts.length === 3) {
+            // Assume DD-MM-YYYY
+            parsed = new Date(parts[2], parts[1] - 1, parts[0]);
+          }
+        }
+        
+        if (!isNaN(parsed) && parsed.getFullYear() > 1900) {
+          shipmentDate = parsed.toISOString().split('T')[0];
+          monthYear = `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, '0')}`;
+        }
+      }
+    }
+
+    // Use a combination of fields to create unique ID if no declaration ID
+    let uniqueId = declarationId;
+    if (!uniqueId || uniqueId === '') {
+      // Create a composite key from available data
+      const composite = `${exporterName}-${consigneeName}-${productDesc}-${dateValue}-${fobValue}`;
+      if (composite !== '----0') {
+        uniqueId = `AUTO-${Buffer.from(composite).toString('base64').slice(0, 20)}-${Math.random().toString(36).slice(2, 8)}`;
+      }
+    }
+
+    if (uniqueId && uniqueId !== '') {
+      parsedRows.push([
+        uniqueId.toString().trim(),
+        (exporterName || '').toString().trim().toUpperCase(),
+        (consigneeName || '').toString().trim().toUpperCase(),
+        (productDesc || '').toString().trim(),
+        dataType,
+        dataType,
+        String(hsCode || '').trim(),
+        quantity || 0,
+        (unit || 'KGS').toString().trim(),
+        fobValue || 0,
+        (fobCurrency || 'USD').toString().trim(),
+        (portLoading || '').toString().trim(),
+        (portDischarge || '').toString().trim(),
+        (countryDest || '').toString().trim(),
+        shipmentDate,
+        monthYear,
+        uploadBatch
+      ]);
+    } else {
+      noIdCount++;
+      skipped++;
+    }
+  }
+  
+  // Batch insert using multi-row VALUES for much better performance
+  const BATCH_SIZE = 500;
+  const columns = [
+    'declaration_id', 'exporter_name', 'consignee_name', 'product_description',
+    'product_category', 'data_type', 'hs_code', 'quantity', 'unit', 'fob_value',
+    'fob_currency', 'port_of_loading', 'port_of_discharge', 'country_of_destination',
+    'shipment_date', 'month_year', 'upload_batch'
+  ];
+  const colCount = columns.length;
+  const pgPool = getPool();
+  
+  console.log(`[BG] Inserting ${parsedRows.length} rows in batches of ${BATCH_SIZE}...`);
+  
+  for (let i = 0; i < parsedRows.length; i += BATCH_SIZE) {
+    const batch = parsedRows.slice(i, i + BATCH_SIZE);
+    const values = [];
+    const params = [];
+    let paramIndex = 1;
+    
+    for (const rowData of batch) {
+      const rowPlaceholders = [];
+      for (let c = 0; c < colCount; c++) {
+        params.push(rowData[c]);
+        rowPlaceholders.push(`$${paramIndex++}`);
+      }
+      values.push(`(${rowPlaceholders.join(', ')})`);
+    }
+    
+    try {
+      const sql = `INSERT INTO ede_exports (${columns.join(', ')}) VALUES ${values.join(', ')}`;
+      await pgPool.query(sql, params);
+      inserted += batch.length;
+    } catch (batchErr) {
+      // If batch fails, try inserting rows individually to identify problematic rows
+      console.error(`[BG] Batch insert error at rows ${i}-${i + batch.length}:`, batchErr.message);
+      for (const rowData of batch) {
+        try {
+          await run(`
+            INSERT INTO exports (
+              declaration_id, exporter_name, consignee_name, product_description,
+              product_category, data_type, hs_code, quantity, unit, fob_value,
+              fob_currency, port_of_loading, port_of_discharge, country_of_destination,
+              shipment_date, month_year, upload_batch
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `, rowData);
+          inserted++;
+        } catch (singleErr) {
+          if (skipped < 5) {
+            console.error(`[BG] Row insert error: ${singleErr.message}`);
+          }
+          skipped++;
+        }
+      }
+    }
+    
+    // Update job status periodically
+    if ((i + BATCH_SIZE) % 2000 < BATCH_SIZE || i + BATCH_SIZE >= parsedRows.length) {
+      uploadJobs.set(jobId, {
+        status: 'processing',
+        totalRows,
+        inserted,
+        skipped,
+        noIdCount,
+        dataType,
+        columnsFound: excelColumns,
+        progress: Math.min(i + BATCH_SIZE, parsedRows.length),
+        startedAt: uploadJobs.get(jobId)?.startedAt
+      });
+      console.log(`[BG] Progress: ${Math.min(i + BATCH_SIZE, parsedRows.length)}/${parsedRows.length} rows (${inserted} inserted, ${skipped} skipped)`);
+    }
+  }
+  
+  console.log(`[BG] Import complete: ${inserted} inserted, ${skipped} skipped, ${noIdCount} no ID`);
+
+  // Mark job as completed
+  uploadJobs.set(jobId, {
+    status: 'completed',
+    totalRows,
+    inserted,
+    skipped,
+    noIdCount,
+    dataType,
+    columnsFound: excelColumns,
+    startedAt: uploadJobs.get(jobId)?.startedAt,
+    completedAt: new Date().toISOString()
+  });
+}
 
 // ============= ANALYTICS ROUTES =============
 

@@ -1014,28 +1014,109 @@ function AuthenticatedApp({ currentUser, onLogout }) {
 
     try {
       const res = await api.post(`/upload`, formData, {
-        headers: { 'Content-Type': 'multipart/form-data' }
+        headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: 120000 // 2 minute timeout for upload
       });
-      setUploadStatus({
-        success: res.data.inserted > 0,
-        message: res.data.inserted > 0 
-          ? `Successfully imported ${res.data.inserted} records (${res.data.skipped} skipped)`
-          : `No records imported. ${res.data.skipped} rows processed but couldn't match required columns.`,
-        columnsFound: res.data.columnsFound
-      });
-      fetchMonths();
-      fetchDashboard();
-      fetchCompetitorAnalytics();
-      fetchClientAnalytics();
-      fetchCompanyComparison();
-      fetchTrends();
+      
+      // If server returns a jobId, poll for completion
+      if (res.data.jobId) {
+        setUploadStatus({
+          success: true,
+          message: `Upload received. Processing ${res.data.totalRows} rows in background...`
+        });
+        
+        // Poll for upload status
+        const jobId = res.data.jobId;
+        let attempts = 0;
+        const maxAttempts = 120; // Poll for up to 4 minutes
+        
+        const pollStatus = async () => {
+          try {
+            const statusRes = await api.get(`/upload/status/${jobId}`);
+            const job = statusRes.data;
+            
+            if (job.status === 'completed') {
+              setUploadStatus({
+                success: job.inserted > 0,
+                message: job.inserted > 0 
+                  ? `Successfully imported ${job.inserted} records (${job.skipped} skipped)`
+                  : `No records imported. ${job.skipped} rows processed but couldn't match required columns.`,
+                columnsFound: job.columnsFound
+              });
+              setLoading(false);
+              fetchMonths();
+              fetchDashboard();
+              fetchCompetitorAnalytics();
+              fetchClientAnalytics();
+              fetchCompanyComparison();
+              fetchTrends();
+              return;
+            } else if (job.status === 'error') {
+              setUploadStatus({
+                success: false,
+                message: `Upload processing failed: ${job.error}`
+              });
+              setLoading(false);
+              return;
+            } else {
+              // Still processing - update progress
+              const progress = job.progress || 0;
+              setUploadStatus({
+                success: true,
+                message: `Processing... ${progress}/${job.totalRows} rows (${job.inserted} inserted, ${job.skipped} skipped)`
+              });
+              
+              attempts++;
+              if (attempts < maxAttempts) {
+                setTimeout(pollStatus, 2000); // Poll every 2 seconds
+              } else {
+                setUploadStatus({
+                  success: true,
+                  message: `Upload is still processing in the background. Refresh the page in a minute to see results.`
+                });
+                setLoading(false);
+              }
+            }
+          } catch (pollErr) {
+            attempts++;
+            if (attempts < maxAttempts) {
+              setTimeout(pollStatus, 3000); // Retry after 3 seconds on error
+            } else {
+              setUploadStatus({
+                success: true,
+                message: `Upload is processing in the background. Refresh the page to see results.`
+              });
+              setLoading(false);
+            }
+          }
+        };
+        
+        // Start polling after a short delay
+        setTimeout(pollStatus, 2000);
+      } else {
+        // Legacy response (direct result)
+        setUploadStatus({
+          success: res.data.inserted > 0,
+          message: res.data.inserted > 0 
+            ? `Successfully imported ${res.data.inserted} records (${res.data.skipped} skipped)`
+            : `No records imported. ${res.data.skipped} rows processed but couldn't match required columns.`,
+          columnsFound: res.data.columnsFound
+        });
+        setLoading(false);
+        fetchMonths();
+        fetchDashboard();
+        fetchCompetitorAnalytics();
+        fetchClientAnalytics();
+        fetchCompanyComparison();
+        fetchTrends();
+      }
     } catch (err) {
       setUploadStatus({
         success: false,
         message: err.response?.data?.error || 'Upload failed'
       });
-    } finally {
       setLoading(false);
+    } finally {
       e.target.value = '';
     }
   };
