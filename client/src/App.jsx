@@ -1111,9 +1111,20 @@ function AuthenticatedApp({ currentUser, onLogout }) {
         fetchTrends();
       }
     } catch (err) {
+      console.error('Upload error:', err);
+      let errorMessage = 'Upload failed';
+      if (err.response?.data?.error) {
+        errorMessage = err.response.data.error;
+      } else if (err.response?.status) {
+        errorMessage = `Upload failed (HTTP ${err.response.status})`;
+      } else if (err.code === 'ECONNABORTED') {
+        errorMessage = 'Upload timed out. The file may be too large or the server is busy.';
+      } else if (err.message) {
+        errorMessage = `Upload failed: ${err.message}`;
+      }
       setUploadStatus({
         success: false,
-        message: err.response?.data?.error || 'Upload failed'
+        message: errorMessage
       });
       setLoading(false);
     } finally {

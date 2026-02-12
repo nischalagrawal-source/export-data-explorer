@@ -28,7 +28,7 @@ const HOST = '0.0.0.0';
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type']
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
 app.use(express.json());
 
@@ -533,7 +533,19 @@ app.get('/api/upload/status/:jobId', (req, res) => {
 });
 
 // ============= FILE UPLOAD ROUTE =============
-app.post('/api/upload', upload.single('file'), async (req, res) => {
+app.post('/api/upload', (req, res, next) => {
+  // Wrap multer in error handler to return JSON errors
+  upload.single('file')(req, res, (err) => {
+    if (err) {
+      console.error('📤 Multer error:', err.message);
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(413).json({ error: 'File too large. Maximum size is 50MB.' });
+      }
+      return res.status(400).json({ error: `File upload error: ${err.message}` });
+    }
+    next();
+  });
+}, async (req, res) => {
   console.log('📤 Upload request received');
   
   if (!req.file) {
@@ -2955,6 +2967,12 @@ app.get('*', (req, res) => {
   } else {
     res.status(404).json({ error: 'Frontend not built. Run: npm run build' });
   }
+});
+
+// Global error handler - return JSON errors instead of HTML
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err.message);
+  res.status(err.status || 500).json({ error: err.message || 'Internal server error' });
 });
 
 // Start server after DB initialization
