@@ -59,6 +59,7 @@ let dbInitialized = false;
 app.get('/api/debug', (req, res) => {
   res.json({
     status: 'ok',
+    version: '2.1.0-batch-upload',
     database: dbUrl ? 'Neon PostgreSQL' : 'NOT CONFIGURED',
     dbInitialized,
     nodeEnv: process.env.NODE_ENV,
