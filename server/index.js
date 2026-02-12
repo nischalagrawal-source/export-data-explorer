@@ -12,7 +12,7 @@ import dotenv from 'dotenv';
 // Load environment variables
 dotenv.config();
 
-import { all, get, run, initDatabase } from './db-pg.js';
+import { all, get, run, initDatabase, getPool } from './db-pg.js';
 
 // JWT Secret - use environment variable in production
 const JWT_SECRET = process.env.JWT_SECRET || 'ede-secret-key-change-in-production-2024';
@@ -545,8 +545,8 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
     }
 
     // Get column names from first row
-    const columns = data.length > 0 ? Object.keys(data[0]) : [];
-    console.log('Found columns:', columns);
+    const excelColumns = data.length > 0 ? Object.keys(data[0]) : [];
+    console.log('Found columns:', excelColumns);
     
     // Debug: Log first row to see actual data
     if (data.length > 0) {
@@ -558,8 +558,7 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
     let skipped = 0;
     let noIdCount = 0;
     
-    // Disable auto-save during bulk import for performance
-    autoSave = false;
+    // Bulk import - process in batches for performance
 
     // Column name variations for Indian export data
     const declarationIdNames = [
@@ -657,17 +656,14 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
     ];
 
     let debugCount = 0;
-    let progressCount = 0;
     const totalRows = data.length;
     
-    // Process in batches for better performance
+    // Parse all rows first, then batch insert for performance
     console.log(`Processing ${totalRows} rows...`);
     
+    const parsedRows = [];
+    
     for (const row of data) {
-      progressCount++;
-      if (progressCount % 5000 === 0) {
-        console.log(`Progress: ${progressCount}/${totalRows} rows processed (${inserted} inserted, ${skipped} skipped)...`);
-      }
       // Map Excel columns to database fields using flexible matching
       const declarationId = findColumnValue(row, declarationIdNames);
       const exporterName = findColumnValue(row, exporterNames);
@@ -739,46 +735,88 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
       }
 
       if (uniqueId && uniqueId !== '') {
-        // Try to insert - let database handle duplicates via unique constraint
-        try {
-          await run(`
-            INSERT INTO exports (
-              declaration_id, exporter_name, consignee_name, product_description,
-              product_category, data_type, hs_code, quantity, unit, fob_value,
-              fob_currency, port_of_loading, port_of_discharge, country_of_destination,
-              shipment_date, month_year, upload_batch
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `, [
-            uniqueId.toString().trim(),
-            (exporterName || '').toString().trim().toUpperCase(),
-            (consigneeName || '').toString().trim().toUpperCase(),
-            (productDesc || '').toString().trim(),
-            dataType,
-            dataType,
-            String(hsCode || '').trim(),
-            quantity || 0,
-            (unit || 'KGS').toString().trim(),
-            fobValue || 0,
-            (fobCurrency || 'USD').toString().trim(),
-            (portLoading || '').toString().trim(),
-            (portDischarge || '').toString().trim(),
-            (countryDest || '').toString().trim(),
-            shipmentDate,
-            monthYear,
-            uploadBatch
-          ]);
-          inserted++;
-        } catch (insertErr) {
-          // Log first 5 errors to understand the issue
-          if (skipped < 5) {
-            console.error(`Insert error for row ${progressCount}:`, insertErr.message);
-            console.error('Data:', { uniqueId, exporterName, productDesc: productDesc?.substring(0,30), shipmentDate });
-          }
-          skipped++;
-        }
+        parsedRows.push([
+          uniqueId.toString().trim(),
+          (exporterName || '').toString().trim().toUpperCase(),
+          (consigneeName || '').toString().trim().toUpperCase(),
+          (productDesc || '').toString().trim(),
+          dataType,
+          dataType,
+          String(hsCode || '').trim(),
+          quantity || 0,
+          (unit || 'KGS').toString().trim(),
+          fobValue || 0,
+          (fobCurrency || 'USD').toString().trim(),
+          (portLoading || '').toString().trim(),
+          (portDischarge || '').toString().trim(),
+          (countryDest || '').toString().trim(),
+          shipmentDate,
+          monthYear,
+          uploadBatch
+        ]);
       } else {
         noIdCount++;
         skipped++;
+      }
+    }
+    
+    // Batch insert using multi-row VALUES for much better performance
+    const BATCH_SIZE = 200;
+    const columns = [
+      'declaration_id', 'exporter_name', 'consignee_name', 'product_description',
+      'product_category', 'data_type', 'hs_code', 'quantity', 'unit', 'fob_value',
+      'fob_currency', 'port_of_loading', 'port_of_discharge', 'country_of_destination',
+      'shipment_date', 'month_year', 'upload_batch'
+    ];
+    const colCount = columns.length;
+    const pgPool = getPool();
+    
+    console.log(`Inserting ${parsedRows.length} rows in batches of ${BATCH_SIZE}...`);
+    
+    for (let i = 0; i < parsedRows.length; i += BATCH_SIZE) {
+      const batch = parsedRows.slice(i, i + BATCH_SIZE);
+      const values = [];
+      const params = [];
+      let paramIndex = 1;
+      
+      for (const rowData of batch) {
+        const rowPlaceholders = [];
+        for (let c = 0; c < colCount; c++) {
+          params.push(rowData[c]);
+          rowPlaceholders.push(`$${paramIndex++}`);
+        }
+        values.push(`(${rowPlaceholders.join(', ')})`);
+      }
+      
+      try {
+        const sql = `INSERT INTO ede_exports (${columns.join(', ')}) VALUES ${values.join(', ')}`;
+        await pgPool.query(sql, params);
+        inserted += batch.length;
+      } catch (batchErr) {
+        // If batch fails, try inserting rows individually to identify problematic rows
+        console.error(`Batch insert error at rows ${i}-${i + batch.length}:`, batchErr.message);
+        for (const rowData of batch) {
+          try {
+            await run(`
+              INSERT INTO exports (
+                declaration_id, exporter_name, consignee_name, product_description,
+                product_category, data_type, hs_code, quantity, unit, fob_value,
+                fob_currency, port_of_loading, port_of_discharge, country_of_destination,
+                shipment_date, month_year, upload_batch
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `, rowData);
+            inserted++;
+          } catch (singleErr) {
+            if (skipped < 5) {
+              console.error(`Row insert error: ${singleErr.message}`);
+            }
+            skipped++;
+          }
+        }
+      }
+      
+      if ((i + BATCH_SIZE) % 5000 < BATCH_SIZE) {
+        console.log(`Progress: ${Math.min(i + BATCH_SIZE, parsedRows.length)}/${parsedRows.length} rows processed (${inserted} inserted, ${skipped} skipped)...`);
       }
     }
     
@@ -793,7 +831,7 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
       skipped,
       noIdCount,
       dataType,
-      columnsFound: columns
+      columnsFound: excelColumns
     });
   } catch (err) {
     console.error('Upload error:', err);
