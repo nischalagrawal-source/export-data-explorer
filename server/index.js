@@ -59,7 +59,7 @@ let dbInitialized = false;
 app.get('/api/debug', (req, res) => {
   res.json({
     status: 'ok',
-    version: '2.1.0-batch-upload',
+    version: '2.2.0-background-upload',
     database: dbUrl ? 'Neon PostgreSQL' : 'NOT CONFIGURED',
     dbInitialized,
     nodeEnv: process.env.NODE_ENV,
@@ -282,8 +282,8 @@ app.delete('/api/users/:id', authenticateToken, requireAdmin, async (req, res) =
 // ============= PROTECT ALL OTHER API ROUTES =============
 // All routes below this middleware require authentication
 app.use('/api', (req, res, next) => {
-  // Skip auth for login and debug routes
-  if (req.path === '/auth/login' || req.path === '/debug') {
+  // Skip auth for login, debug, and upload status routes
+  if (req.path === '/auth/login' || req.path === '/debug' || req.path.startsWith('/upload/status/')) {
     return next();
   }
   authenticateToken(req, res, next);
@@ -586,9 +586,13 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
     });
 
     // Return immediately to avoid Render timeout
+    // Include 'inserted' field for backward compatibility with old frontend
     res.json({
       success: true,
-      message: `Upload received. Processing ${data.length} rows in background...`,
+      inserted: data.length,
+      skipped: 0,
+      noIdCount: 0,
+      message: `Upload received! Processing ${data.length} rows in background. Data will appear shortly.`,
       jobId,
       totalRows: data.length,
       dataType,
@@ -2923,13 +2927,30 @@ app.get('/api/export/summary', async (req, res) => {
 
 // Serve static files from the built frontend (AFTER all API routes)
 if (fs.existsSync(clientDistPath)) {
-  app.use(express.static(clientDistPath));
+  // Hashed assets (JS, CSS with hash in filename) - cache for 1 year
+  app.use('/assets', express.static(path.join(clientDistPath, 'assets'), {
+    maxAge: '1y',
+    immutable: true
+  }));
+  // Other static files - no cache
+  app.use(express.static(clientDistPath, {
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith('.html')) {
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+      }
+    }
+  }));
 }
 
 // Serve frontend for all other routes (SPA support)
 app.get('*', (req, res) => {
   const indexPath = path.join(__dirname, '..', 'client', 'dist', 'index.html');
   if (fs.existsSync(indexPath)) {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
     res.sendFile(indexPath);
   } else {
     res.status(404).json({ error: 'Frontend not built. Run: npm run build' });
