@@ -1073,7 +1073,7 @@ function AuthenticatedApp({ currentUser, onLogout }) {
     }
 
     setLoading(true);
-    setUploadStatus(null);
+    setUploadStatus({ success: true, message: `Uploading ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)...` });
 
     const formData = new FormData();
     formData.append('file', file);
@@ -1081,9 +1081,17 @@ function AuthenticatedApp({ currentUser, onLogout }) {
 
     try {
       const res = await api.post(`/upload`, formData, {
-        timeout: 120000, // 2 minute timeout for upload
+        timeout: 600000, // 10 minute timeout for large files
         maxContentLength: Infinity,
-        maxBodyLength: Infinity
+        maxBodyLength: Infinity,
+        onUploadProgress: (progressEvent) => {
+          if (progressEvent.total) {
+            const pct = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+            setUploadStatus({ success: true, message: `Uploading... ${pct}% (${(progressEvent.loaded / 1024 / 1024).toFixed(1)}MB / ${(progressEvent.total / 1024 / 1024).toFixed(1)}MB)` });
+          } else {
+            setUploadStatus({ success: true, message: `Uploading... ${(progressEvent.loaded / 1024 / 1024).toFixed(1)}MB sent` });
+          }
+        }
       });
       
       // If server returns a jobId, poll for completion
@@ -1190,7 +1198,7 @@ function AuthenticatedApp({ currentUser, onLogout }) {
       } else if (err.response?.status) {
         errorMessage = `Upload failed (HTTP ${err.response.status})`;
       } else if (err.code === 'ECONNABORTED') {
-        errorMessage = 'Upload timed out. The file may be too large or the server is busy. Try a smaller file.';
+        errorMessage = 'Upload timed out. The file may be too large for the server to process. Try splitting it into smaller files.';
       } else if (err.message) {
         errorMessage = `Upload failed: ${err.message}`;
       }

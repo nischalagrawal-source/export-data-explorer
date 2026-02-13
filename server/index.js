@@ -612,6 +612,10 @@ app.get('/api/upload/status/:jobId', (req, res) => {
 
 // ============= FILE UPLOAD ROUTE =============
 app.post('/api/upload', blockDemo, (req, res, next) => {
+  // Extend timeout for large file uploads (10 minutes)
+  req.setTimeout(600000);
+  res.setTimeout(600000);
+  
   // Wrap multer in error handler to return JSON errors
   try {
     upload.single('file')(req, res, (err) => {
@@ -3071,15 +3075,22 @@ process.on('unhandledRejection', (reason, promise) => {
 // Start server after DB initialization
 initDb().then(() => {
   dbInitialized = true;
-  app.listen(PORT, HOST, () => {
+  const server = app.listen(PORT, HOST, () => {
     console.log(`🚀 Export Data Explorer running on port ${PORT}`);
     console.log(`🌐 Access at: http://localhost:${PORT}`);
   });
+  // Increase server timeout for large file uploads (10 minutes)
+  server.timeout = 600000;
+  server.keepAliveTimeout = 620000;
+  server.headersTimeout = 630000;
 }).catch(err => {
   console.error('Failed to initialize database:', err);
   // Still start server but mark DB as not initialized
   dbInitialized = false;
-  app.listen(PORT, HOST, () => {
+  const server = app.listen(PORT, HOST, () => {
     console.log(`⚠️ Server started but DB initialization failed: ${err.message}`);
   });
+  server.timeout = 600000;
+  server.keepAliveTimeout = 620000;
+  server.headersTimeout = 630000;
 });
