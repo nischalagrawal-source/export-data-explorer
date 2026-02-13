@@ -67,7 +67,7 @@ async function initDb() {
     await client.query(`CREATE TABLE IF NOT EXISTS ede_clients (id SERIAL PRIMARY KEY, name TEXT UNIQUE NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, active INTEGER DEFAULT 1)`);
     await client.query(`CREATE TABLE IF NOT EXISTS ede_company_info (id SERIAL PRIMARY KEY, company_name TEXT NOT NULL DEFAULT 'AGNA', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`);
     await client.query(`CREATE TABLE IF NOT EXISTS ede_feedback (id SERIAL PRIMARY KEY, user_name TEXT, feedback_type TEXT, message TEXT NOT NULL, page TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`);
-    await client.query(`CREATE TABLE IF NOT EXISTS ede_users (id SERIAL PRIMARY KEY, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, role TEXT CHECK(role IN ('admin', 'user')) DEFAULT 'user', full_name TEXT, active INTEGER DEFAULT 1, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, last_login TIMESTAMP)`);
+    await client.query(`CREATE TABLE IF NOT EXISTS ede_users (id SERIAL PRIMARY KEY, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, role TEXT CHECK(role IN ('admin', 'user', 'demo')) DEFAULT 'user', full_name TEXT, active INTEGER DEFAULT 1, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, last_login TIMESTAMP)`);
 
     const companyResult = await client.query('SELECT COUNT(*) as count FROM ede_company_info');
     if (parseInt(companyResult.rows[0].count) === 0) {

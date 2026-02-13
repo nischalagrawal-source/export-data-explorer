@@ -30,7 +30,8 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // NOTE: Static files are served AFTER all API routes (at the end of file)
 const clientDistPath = path.join(__dirname, '..', 'client', 'dist');
@@ -93,6 +94,14 @@ const requireAdmin = (req, res, next) => {
   next();
 };
 
+// Block demo users from write operations
+const blockDemo = (req, res, next) => {
+  if (req.user && req.user.role === 'demo') {
+    return res.status(403).json({ error: 'This action is not available in demo mode. Please sign up for a full account.' });
+  }
+  next();
+};
+
 // ============= AUTH ROUTES (PUBLIC) =============
 
 // Login
@@ -141,6 +150,53 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
+// Demo login - no password required, auto-creates demo user if missing
+app.post('/api/auth/demo-login', async (req, res) => {
+  try {
+    // Check if demo user exists, create if not
+    let demoUser = await get('SELECT * FROM users WHERE username = ? AND active = 1', ['demo']);
+    
+    if (!demoUser) {
+      // Create demo user with a random password (not meant for regular login)
+      const demoPassword = await bcrypt.hash('demo-account-readonly-' + Date.now(), 10);
+      await run(
+        'INSERT INTO users (username, password_hash, role, full_name) VALUES (?, ?, ?, ?) ON CONFLICT (username) DO UPDATE SET active = 1',
+        ['demo', demoPassword, 'demo', 'Demo User']
+      );
+      demoUser = await get('SELECT * FROM users WHERE username = ?', ['demo']);
+    }
+    
+    // Update last login
+    await run('UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?', [demoUser.id]);
+    
+    // Pick the most recent month with data for demo
+    const latestMonth = await get('SELECT month_year FROM exports WHERE month_year IS NOT NULL ORDER BY month_year DESC LIMIT 1');
+    
+    // Generate JWT token (shorter expiry for demo - 4 hours)
+    const token = jwt.sign(
+      { id: demoUser.id, username: 'demo', role: 'demo', full_name: 'Demo User', is_demo: true },
+      JWT_SECRET,
+      { expiresIn: '4h' }
+    );
+    
+    res.json({
+      success: true,
+      token,
+      user: {
+        id: demoUser.id,
+        username: 'demo',
+        role: 'demo',
+        full_name: 'Demo User',
+        is_demo: true
+      },
+      demo_month: latestMonth?.month_year || null
+    });
+  } catch (err) {
+    console.error('Demo login error:', err);
+    res.status(500).json({ error: 'Demo login failed' });
+  }
+});
+
 // Verify token (check if user is still logged in)
 app.get('/api/auth/verify', authenticateToken, (req, res) => {
   res.json({ 
@@ -150,7 +206,7 @@ app.get('/api/auth/verify', authenticateToken, (req, res) => {
 });
 
 // Change password
-app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
+app.post('/api/auth/change-password', authenticateToken, blockDemo, async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body;
     
@@ -282,8 +338,8 @@ app.delete('/api/users/:id', authenticateToken, requireAdmin, async (req, res) =
 // ============= PROTECT ALL OTHER API ROUTES =============
 // All routes below this middleware require authentication
 app.use('/api', (req, res, next) => {
-  // Skip auth for login, debug, and upload status routes
-  if (req.path === '/auth/login' || req.path === '/debug' || req.path.startsWith('/upload/status/')) {
+  // Skip auth for login, demo-login, debug, and upload status routes
+  if (req.path === '/auth/login' || req.path === '/auth/demo-login' || req.path === '/debug' || req.path.startsWith('/upload/status/')) {
     return next();
   }
   authenticateToken(req, res, next);
@@ -350,7 +406,7 @@ app.get('/api/competitors/search', async (req, res) => {
   res.json(enriched);
 });
 
-app.post('/api/competitors', async (req, res) => {
+app.post('/api/competitors', blockDemo, async (req, res) => {
   const { name, names } = req.body;
   
   // Support adding multiple names at once
@@ -360,23 +416,34 @@ app.post('/api/competitors', async (req, res) => {
   
   for (const n of namesToAdd) {
     if (!n || !n.trim()) continue;
+    const trimmedName = n.trim().toUpperCase();
     try {
-      await run('INSERT INTO competitors (name) VALUES (?)', [n.trim().toUpperCase()]);
-      const result = await get('SELECT last_insert_rowid() as id');
-      added.push({ id: result?.id, name: n.trim().toUpperCase() });
-    } catch (err) {
-      if (err.message && err.message.includes('UNIQUE')) {
-        errors.push({ name: n, error: 'Already exists' });
+      // Check if competitor already exists (active or inactive)
+      const existing = await get('SELECT id, active FROM competitors WHERE name = ?', [trimmedName]);
+      
+      if (existing && existing.active === 1) {
+        // Already actively tracked
+        errors.push({ name: trimmedName, error: 'Already exists' });
+      } else if (existing && (existing.active === 0 || existing.active === false)) {
+        // Was previously removed - reactivate it
+        await run('UPDATE competitors SET active = 1 WHERE id = ?', [existing.id]);
+        added.push({ id: existing.id, name: trimmedName });
       } else {
-        errors.push({ name: n, error: err.message });
+        // Brand new competitor
+        const pool = getPool();
+        const insertSql = 'INSERT INTO ede_competitors (name) VALUES ($1) RETURNING id';
+        const result = await pool.query(insertSql, [trimmedName]);
+        added.push({ id: result.rows[0]?.id, name: trimmedName });
       }
+    } catch (err) {
+      errors.push({ name: trimmedName, error: err.message });
     }
   }
   
   res.json({ added, errors });
 });
 
-app.delete('/api/competitors/:id', async (req, res) => {
+app.delete('/api/competitors/:id', blockDemo, async (req, res) => {
   await run('UPDATE competitors SET active = 0 WHERE id = ?', [parseInt(req.params.id)]);
   res.json({ success: true });
 });
@@ -429,7 +496,7 @@ app.get('/api/clients/search', async (req, res) => {
   res.json(enriched);
 });
 
-app.post('/api/clients', async (req, res) => {
+app.post('/api/clients', blockDemo, async (req, res) => {
   const { name, names } = req.body;
   
   // Support adding multiple names at once
@@ -439,23 +506,34 @@ app.post('/api/clients', async (req, res) => {
   
   for (const n of namesToAdd) {
     if (!n || !n.trim()) continue;
+    const trimmedName = n.trim().toUpperCase();
     try {
-      await run('INSERT INTO clients (name) VALUES (?)', [n.trim().toUpperCase()]);
-      const result = await get('SELECT last_insert_rowid() as id');
-      added.push({ id: result?.id, name: n.trim().toUpperCase() });
-    } catch (err) {
-      if (err.message && err.message.includes('UNIQUE')) {
-        errors.push({ name: n, error: 'Already exists' });
+      // Check if client already exists (active or inactive)
+      const existing = await get('SELECT id, active FROM clients WHERE name = ?', [trimmedName]);
+      
+      if (existing && existing.active === 1) {
+        // Already actively tracked
+        errors.push({ name: trimmedName, error: 'Already exists' });
+      } else if (existing && (existing.active === 0 || existing.active === false)) {
+        // Was previously removed - reactivate it
+        await run('UPDATE clients SET active = 1 WHERE id = ?', [existing.id]);
+        added.push({ id: existing.id, name: trimmedName });
       } else {
-        errors.push({ name: n, error: err.message });
+        // Brand new client
+        const pool = getPool();
+        const insertSql = 'INSERT INTO ede_clients (name) VALUES ($1) RETURNING id';
+        const result = await pool.query(insertSql, [trimmedName]);
+        added.push({ id: result.rows[0]?.id, name: trimmedName });
       }
+    } catch (err) {
+      errors.push({ name: trimmedName, error: err.message });
     }
   }
   
   res.json({ added, errors });
 });
 
-app.delete('/api/clients/:id', async (req, res) => {
+app.delete('/api/clients/:id', blockDemo, async (req, res) => {
   await run('UPDATE clients SET active = 0 WHERE id = ?', [parseInt(req.params.id)]);
   res.json({ success: true });
 });
@@ -466,7 +544,7 @@ app.get('/api/company', async (req, res) => {
   res.json(company);
 });
 
-app.put('/api/company', async (req, res) => {
+app.put('/api/company', blockDemo, async (req, res) => {
   const { company_name } = req.body;
   await run('UPDATE company_info SET company_name = ?', [company_name.trim().toUpperCase()]);
   res.json({ success: true });
@@ -533,18 +611,23 @@ app.get('/api/upload/status/:jobId', (req, res) => {
 });
 
 // ============= FILE UPLOAD ROUTE =============
-app.post('/api/upload', (req, res, next) => {
+app.post('/api/upload', blockDemo, (req, res, next) => {
   // Wrap multer in error handler to return JSON errors
-  upload.single('file')(req, res, (err) => {
-    if (err) {
-      console.error('📤 Multer error:', err.message);
-      if (err.code === 'LIMIT_FILE_SIZE') {
-        return res.status(413).json({ error: 'File too large. Maximum size is 50MB.' });
+  try {
+    upload.single('file')(req, res, (err) => {
+      if (err) {
+        console.error('📤 Multer error:', err.message);
+        if (err.code === 'LIMIT_FILE_SIZE') {
+          return res.status(413).json({ error: 'File too large. Maximum size is 50MB.' });
+        }
+        return res.status(400).json({ error: `File upload error: ${err.message}` });
       }
-      return res.status(400).json({ error: `File upload error: ${err.message}` });
-    }
-    next();
-  });
+      next();
+    });
+  } catch (multerErr) {
+    console.error('📤 Multer crash:', multerErr.message);
+    return res.status(500).json({ error: `Upload processing error: ${multerErr.message}` });
+  }
 }, async (req, res) => {
   console.log('📤 Upload request received');
   
@@ -2238,7 +2321,7 @@ app.get('/api/export/monthly-comparison', async (req, res) => {
 
 // ============= FEEDBACK ROUTES =============
 
-app.post('/api/feedback', async (req, res) => {
+app.post('/api/feedback', blockDemo, async (req, res) => {
   const { user_name, feedback_type, message, page } = req.body;
   if (!message) {
     return res.status(400).json({ error: 'Message is required' });
@@ -2973,6 +3056,16 @@ app.get('*', (req, res) => {
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err.message);
   res.status(err.status || 500).json({ error: err.message || 'Internal server error' });
+});
+
+// Prevent server crashes from unhandled errors
+process.on('uncaughtException', (err) => {
+  console.error('⚠️ Uncaught Exception:', err.message);
+  console.error(err.stack);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('⚠️ Unhandled Rejection:', reason);
 });
 
 // Start server after DB initialization

@@ -173,6 +173,7 @@ const LoginPage = ({ onLogin }) => {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [demoLoading, setDemoLoading] = useState(false);
   const [error, setError] = useState('');
 
   const handleSubmit = async (e) => {
@@ -191,6 +192,24 @@ const LoginPage = ({ onLogin }) => {
       setError(err.response?.data?.error || 'Login failed. Please try again.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleDemoLogin = async () => {
+    setError('');
+    setDemoLoading(true);
+
+    try {
+      const response = await api.post(`/auth/demo-login`);
+      if (response.data.success) {
+        localStorage.setItem('ede_token', response.data.token);
+        localStorage.setItem('ede_user', JSON.stringify(response.data.user));
+        onLogin(response.data.user);
+      }
+    } catch (err) {
+      setError(err.response?.data?.error || 'Demo login failed. Please try again.');
+    } finally {
+      setDemoLoading(false);
     }
   };
 
@@ -254,7 +273,7 @@ const LoginPage = ({ onLogin }) => {
 
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || demoLoading}
               className="w-full bg-gradient-to-r from-amber-500 to-amber-600 text-navy-950 font-semibold py-3 rounded-lg hover:shadow-lg hover:shadow-amber-500/25 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
             >
               {loading ? (
@@ -267,6 +286,30 @@ const LoginPage = ({ onLogin }) => {
               )}
             </button>
           </form>
+
+          {/* Divider */}
+          <div className="flex items-center gap-3 my-6">
+            <div className="flex-1 h-px bg-white/10"></div>
+            <span className="text-xs text-slate-500 uppercase tracking-wider">or</span>
+            <div className="flex-1 h-px bg-white/10"></div>
+          </div>
+
+          {/* Try Demo Button */}
+          <button
+            onClick={handleDemoLogin}
+            disabled={loading || demoLoading}
+            className="w-full bg-white/5 border border-white/10 text-white font-semibold py-3 rounded-lg hover:bg-white/10 hover:border-amber-500/30 transition-all disabled:opacity-50 flex items-center justify-center gap-2 group"
+          >
+            {demoLoading ? (
+              <div className="w-5 h-5 border-2 border-amber-500 border-t-transparent rounded-full animate-spin" />
+            ) : (
+              <>
+                <Sparkles className="w-5 h-5 text-amber-400 group-hover:text-amber-300" />
+                <span>Try Demo</span>
+                <span className="text-xs text-slate-400 ml-1">(Read-only)</span>
+              </>
+            )}
+          </button>
         </div>
 
         {/* Footer */}
@@ -404,9 +447,11 @@ const UserManagement = ({ currentUser }) => {
                   <span className={`px-2 py-1 rounded-full text-xs ${
                     user.role === 'admin' 
                       ? 'bg-amber-500/20 text-amber-400' 
+                      : user.role === 'demo'
+                      ? 'bg-violet-500/20 text-violet-400'
                       : 'bg-sky-500/20 text-sky-400'
                   }`}>
-                    {user.role === 'admin' ? 'Admin' : 'User'}
+                    {user.role === 'admin' ? 'Admin' : user.role === 'demo' ? 'Demo' : 'User'}
                   </span>
                 </td>
                 <td className="p-4">
@@ -687,9 +732,11 @@ function App() {
 
 // Authenticated App Component (the original App content)
 function AuthenticatedApp({ currentUser, onLogout }) {
+  const isDemo = currentUser?.role === 'demo' || currentUser?.is_demo === true;
   const [activeTab, setActiveTab] = useState('dashboard');
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [loading, setLoading] = useState(false);
+  const [demoToast, setDemoToast] = useState('');
   
   // Data states
   const [competitors, setCompetitors] = useState([]);
@@ -747,6 +794,12 @@ function AuthenticatedApp({ currentUser, onLogout }) {
   // Benchmarking
   const [benchmarkData, setBenchmarkData] = useState(null);
   const [loadingBenchmark, setLoadingBenchmark] = useState(false);
+
+  // Show demo toast notification
+  const showDemoToast = (message) => {
+    setDemoToast(message || 'This action is not available in demo mode.');
+    setTimeout(() => setDemoToast(''), 3000);
+  };
 
   // Fetch initial data
   useEffect(() => {
@@ -925,6 +978,7 @@ function AuthenticatedApp({ currentUser, onLogout }) {
 
   const handleAddCompetitor = async (e) => {
     e.preventDefault();
+    if (isDemo) { showDemoToast('Adding competitors is not available in demo mode.'); return; }
     const namesToAdd = selectedCompetitors.length > 0 ? selectedCompetitors : (newCompetitor.trim() ? [newCompetitor] : []);
     if (namesToAdd.length === 0) return;
     
@@ -947,6 +1001,7 @@ function AuthenticatedApp({ currentUser, onLogout }) {
   };
 
   const handleDeleteCompetitor = async (id) => {
+    if (isDemo) { showDemoToast('Removing competitors is not available in demo mode.'); return; }
     if (!confirm('Remove this competitor from tracking?')) return;
     try {
       await api.delete(`/competitors/${id}`);
@@ -960,6 +1015,7 @@ function AuthenticatedApp({ currentUser, onLogout }) {
 
   const handleAddClient = async (e) => {
     e.preventDefault();
+    if (isDemo) { showDemoToast('Adding clients is not available in demo mode.'); return; }
     const namesToAdd = selectedClients.length > 0 ? selectedClients : (newClient.trim() ? [newClient] : []);
     if (namesToAdd.length === 0) return;
     
@@ -981,6 +1037,7 @@ function AuthenticatedApp({ currentUser, onLogout }) {
   };
 
   const handleDeleteClient = async (id) => {
+    if (isDemo) { showDemoToast('Removing clients is not available in demo mode.'); return; }
     if (!confirm('Remove this client from tracking?')) return;
     try {
       await api.delete(`/clients/${id}`);
@@ -992,6 +1049,7 @@ function AuthenticatedApp({ currentUser, onLogout }) {
   };
 
   const handleUpdateCompany = async () => {
+    if (isDemo) { showDemoToast('Updating company settings is not available in demo mode.'); return; }
     try {
       await api.put(`/company`, { company_name: companyName });
       fetchCompanyComparison();
@@ -1002,8 +1060,17 @@ function AuthenticatedApp({ currentUser, onLogout }) {
   };
 
   const handleFileUpload = async (e) => {
+    if (isDemo) { showDemoToast('File upload is not available in demo mode.'); e.target.value = ''; return; }
     const file = e.target.files[0];
     if (!file) return;
+
+    // Client-side file size validation (50MB max)
+    const MAX_SIZE = 50 * 1024 * 1024;
+    if (file.size > MAX_SIZE) {
+      setUploadStatus({ success: false, message: `File too large (${(file.size / 1024 / 1024).toFixed(1)}MB). Maximum size is 50MB.` });
+      e.target.value = '';
+      return;
+    }
 
     setLoading(true);
     setUploadStatus(null);
@@ -1014,8 +1081,9 @@ function AuthenticatedApp({ currentUser, onLogout }) {
 
     try {
       const res = await api.post(`/upload`, formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-        timeout: 120000 // 2 minute timeout for upload
+        timeout: 120000, // 2 minute timeout for upload
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity
       });
       
       // If server returns a jobId, poll for completion
@@ -1115,10 +1183,14 @@ function AuthenticatedApp({ currentUser, onLogout }) {
       let errorMessage = 'Upload failed';
       if (err.response?.data?.error) {
         errorMessage = err.response.data.error;
+      } else if (err.response?.status === 502) {
+        errorMessage = 'Upload failed: Server gateway error. The file may be too large for the server. Try a smaller file or contact the administrator.';
+      } else if (err.response?.status === 413) {
+        errorMessage = 'Upload failed: File is too large. Maximum size is 50MB.';
       } else if (err.response?.status) {
         errorMessage = `Upload failed (HTTP ${err.response.status})`;
       } else if (err.code === 'ECONNABORTED') {
-        errorMessage = 'Upload timed out. The file may be too large or the server is busy.';
+        errorMessage = 'Upload timed out. The file may be too large or the server is busy. Try a smaller file.';
       } else if (err.message) {
         errorMessage = `Upload failed: ${err.message}`;
       }
@@ -1171,6 +1243,7 @@ function AuthenticatedApp({ currentUser, onLogout }) {
   // Submit feedback
   const submitFeedback = async (e) => {
     e.preventDefault();
+    if (isDemo) { showDemoToast('Feedback submission is not available in demo mode.'); return; }
     if (!feedbackData.message.trim()) return;
     
     setFeedbackSubmitting(true);
@@ -1392,6 +1465,19 @@ Generated by Export Data Explorer
 
   return (
     <div className="min-h-screen flex">
+      {/* Demo Toast Notification */}
+      {demoToast && (
+        <div className="fixed top-4 left-1/2 transform -translate-x-1/2 z-50 animate-fade-in">
+          <div className="bg-amber-500/20 border border-amber-500/40 backdrop-blur-lg rounded-lg px-5 py-3 flex items-center gap-3 shadow-xl">
+            <Sparkles className="w-5 h-5 text-amber-400 flex-shrink-0" />
+            <span className="text-amber-200 text-sm font-medium">{demoToast}</span>
+            <button onClick={() => setDemoToast('')} className="text-amber-400/60 hover:text-amber-400 ml-2">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Sidebar */}
       <aside className={`${sidebarOpen ? 'w-64' : 'w-20'} bg-navy-950/50 border-r border-white/5 flex flex-col transition-all duration-300`}>
         {/* Logo */}
@@ -1417,12 +1503,14 @@ Generated by Export Data Explorer
             active={activeTab === 'dashboard'}
             onClick={() => setActiveTab('dashboard')}
           />
-          <NavItem
-            icon={Upload}
-            label={sidebarOpen ? "Import Data" : ""}
-            active={activeTab === 'upload'}
-            onClick={() => setActiveTab('upload')}
-          />
+          {!isDemo && (
+            <NavItem
+              icon={Upload}
+              label={sidebarOpen ? "Import Data" : ""}
+              active={activeTab === 'upload'}
+              onClick={() => setActiveTab('upload')}
+            />
+          )}
           <NavItem
             icon={Target}
             label={sidebarOpen ? "Competitors" : ""}
@@ -1495,8 +1583,8 @@ Generated by Export Data Explorer
             <div className="mb-3 px-2">
               <p className="text-white text-sm font-medium truncate">{currentUser?.full_name || currentUser?.username}</p>
               <p className="text-slate-500 text-xs flex items-center gap-1">
-                {currentUser?.role === 'admin' ? <Shield className="w-3 h-3" /> : <User className="w-3 h-3" />}
-                {currentUser?.role === 'admin' ? 'Administrator' : 'User'}
+                {isDemo ? <Sparkles className="w-3 h-3 text-amber-400" /> : currentUser?.role === 'admin' ? <Shield className="w-3 h-3" /> : <User className="w-3 h-3" />}
+                {isDemo ? <span className="text-amber-400">Demo Account</span> : currentUser?.role === 'admin' ? 'Administrator' : 'User'}
               </p>
             </div>
           )}
@@ -1582,6 +1670,27 @@ Generated by Export Data Explorer
             </div>
           </div>
         </header>
+
+        {/* Demo Mode Banner */}
+        {isDemo && (
+          <div className="mx-6 mt-4 bg-amber-500/10 border border-amber-500/30 rounded-xl px-5 py-3 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-lg bg-amber-500/20 flex items-center justify-center">
+                <Sparkles className="w-4 h-4 text-amber-400" />
+              </div>
+              <div>
+                <p className="text-amber-200 text-sm font-medium">Demo Mode</p>
+                <p className="text-amber-200/60 text-xs">You are viewing sample data. Some actions are restricted.</p>
+              </div>
+            </div>
+            <button
+              onClick={onLogout}
+              className="px-4 py-1.5 bg-amber-500/20 border border-amber-500/30 rounded-lg text-amber-300 text-xs font-medium hover:bg-amber-500/30 transition-all"
+            >
+              Sign in with your account
+            </button>
+          </div>
+        )}
 
         {/* Content */}
         <div className="p-6">
@@ -3471,6 +3580,12 @@ Generated by Export Data Explorer
               {/* Company Settings */}
               <div className="glass-card rounded-xl p-6">
                 <h3 className="text-lg font-semibold text-white mb-4">Company Settings</h3>
+                {isDemo && (
+                  <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-3 mb-4 flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-amber-400" />
+                    <span className="text-amber-200/80 text-xs">Settings are read-only in demo mode.</span>
+                  </div>
+                )}
                 <div className="space-y-4">
                   <div>
                     <label className="block text-sm text-slate-400 mb-2">Your Company Name</label>
@@ -3478,11 +3593,12 @@ Generated by Export Data Explorer
                       <input
                         type="text"
                         value={companyName}
-                        onChange={(e) => setCompanyName(e.target.value)}
+                        onChange={(e) => !isDemo && setCompanyName(e.target.value)}
                         placeholder="Enter your company name"
-                        className="flex-1"
+                        className={`flex-1 ${isDemo ? 'opacity-60 cursor-not-allowed' : ''}`}
+                        readOnly={isDemo}
                       />
-                      <button onClick={handleUpdateCompany} className="btn-primary">
+                      <button onClick={handleUpdateCompany} className={`btn-primary ${isDemo ? 'opacity-50 cursor-not-allowed' : ''}`} disabled={isDemo}>
                         Save
                       </button>
                     </div>
@@ -3518,8 +3634,8 @@ Generated by Export Data Explorer
                 </div>
               </div>
 
-              {/* Change Password */}
-              <ChangePassword />
+              {/* Change Password - hidden for demo */}
+              {!isDemo && <ChangePassword />}
 
               {/* About */}
               <div className="glass-card rounded-xl p-6">
