@@ -102,6 +102,13 @@ Or manually deploy:
    - Go to Settings → Networking → Generate Domain
    - Share the URL with your team!
 
+### Deploy on Render
+
+1. Create a new **Web Service** and connect this GitHub repo.
+2. Use **Build Command:** `npm run build:prod` and **Start Command:** `npm start`.
+3. Set env vars (e.g. `DATABASE_URL` for Neon PostgreSQL).
+4. **If uploads return 502:** On Render the project directory is read-only. The app uses `/tmp` for uploads when `RENDER` is set (automatic). Ensure you’re on the latest deploy: open `/api/debug` and check that `version` is `2.3.0-render-upload-fix` and `uploadStorage` is `disk`. If not, use **Manual Deploy** → **Clear build cache & deploy**.
+
 ### Local Development
 
 ```bash

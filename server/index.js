@@ -37,8 +37,10 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 // NOTE: Static files are served AFTER all API routes (at the end of file)
 const clientDistPath = path.join(__dirname, '..', 'client', 'dist');
 
-// Uploads: prefer /tmp (writable on most PaaS); fallback to server/uploads
-const uploadsDir = process.env.UPLOAD_DIR || path.join(os.tmpdir(), 'ede-uploads');
+// Uploads: on Render use /tmp (project dir is read-only). Else use env or /tmp.
+const uploadsDir = process.env.RENDER
+  ? path.join(os.tmpdir(), 'ede-uploads')
+  : (process.env.UPLOAD_DIR || path.join(os.tmpdir(), 'ede-uploads'));
 try {
   if (!fs.existsSync(uploadsDir)) {
     fs.mkdirSync(uploadsDir, { recursive: true });
@@ -50,7 +52,7 @@ try {
   console.warn('⚠️ Upload directory not writable:', uploadsDir, e.message);
 }
 
-// Multer: use disk if writable (saves RAM), else memory with smaller limit to avoid OOM
+// Multer: use disk if writable (saves RAM), else memory with smaller limit
 let upload;
 let UPLOAD_STORAGE_TYPE = 'unknown';
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
@@ -63,13 +65,22 @@ try {
     storage: multer.diskStorage({
       destination: (req, file, cb) => {
         try {
-          if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+          if (!fs.existsSync(uploadsDir)) {
+            fs.mkdirSync(uploadsDir, { recursive: true });
+          }
           cb(null, uploadsDir);
         } catch (e) {
           cb(e);
         }
       },
-      filename: (req, file, cb) => cb(null, `upload-${Date.now()}-${(file.originalname || 'file').replace(/[^a-zA-Z0-9.-]/g, '_')}`)
+      filename: (req, file, cb) => {
+        try {
+          const safeName = (file.originalname || 'file').replace(/[^a-zA-Z0-9.-]/g, '_');
+          cb(null, `upload-${Date.now()}-${safeName}`);
+        } catch (e) {
+          cb(e);
+        }
+      }
     }),
     limits: { fileSize: MAX_FILE_SIZE }
   });
@@ -96,12 +107,13 @@ let dbInitialized = false;
 app.get('/api/debug', (req, res) => {
   res.json({
     status: 'ok',
-    version: '2.2.0-background-upload',
+    version: '2.3.0-render-upload-fix',
     database: dbUrl ? 'Neon PostgreSQL' : 'NOT CONFIGURED',
     dbInitialized,
     nodeEnv: process.env.NODE_ENV,
     uploadsDir,
-    uploadStorage: UPLOAD_STORAGE_TYPE
+    uploadStorage: UPLOAD_STORAGE_TYPE,
+    onRender: !!process.env.RENDER
   });
 });
 
@@ -671,10 +683,17 @@ app.post('/api/upload', blockDemo, (req, res, next) => {
   }
 }, async (req, res) => {
   let filePath = null;
+  const safeSend = (status, body) => {
+    try {
+      if (!res.headersSent) res.status(status).json(body);
+    } catch (e) {
+      console.error('Response send error:', e.message);
+    }
+  };
   try {
     console.log('📤 Upload request received');
     if (!req.file) {
-      return res.status(400).json({ error: 'No file uploaded' });
+      return safeSend(400, { error: 'No file uploaded' });
     }
     filePath = req.file.path || null;
     console.log(`📁 File received: ${req.file.originalname}, size: ${req.file.size} bytes${filePath ? `, path: ${filePath}` : ' (in memory)'}`);
@@ -682,7 +701,7 @@ app.post('/api/upload', blockDemo, (req, res, next) => {
     const { dataType } = req.body;
     if (!dataType || !['fruits', 'vegetables'].includes(dataType)) {
       try { if (filePath) fs.unlinkSync(filePath); } catch(e) {}
-      return res.status(400).json({ error: 'Invalid data type. Must be "fruits" or "vegetables"' });
+      return safeSend(400, { error: 'Invalid data type. Must be "fruits" or "vegetables"' });
     }
 
     let workbook;
@@ -691,7 +710,7 @@ app.post('/api/upload', blockDemo, (req, res, next) => {
     } else if (req.file.buffer) {
       workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
     } else {
-      return res.status(400).json({ error: 'File data missing' });
+      return safeSend(400, { error: 'File data missing' });
     }
 
     const sheetName = workbook.SheetNames[0];
@@ -702,7 +721,7 @@ app.post('/api/upload', blockDemo, (req, res, next) => {
 
     console.log(`📊 Parsed ${data.length} rows from Excel`);
     if (data.length === 0) {
-      return res.status(400).json({ error: 'Excel file is empty' });
+      return safeSend(400, { error: 'Excel file is empty' });
     }
 
     const excelColumns = Object.keys(data[0] || {});
@@ -719,7 +738,7 @@ app.post('/api/upload', blockDemo, (req, res, next) => {
       startedAt: new Date().toISOString()
     });
 
-    res.json({
+    safeSend(200, {
       success: true,
       inserted: data.length,
       skipped: 0,
@@ -743,7 +762,7 @@ app.post('/api/upload', blockDemo, (req, res, next) => {
     console.error('Upload error:', err.message);
     console.error(err.stack);
     try { if (filePath) fs.unlinkSync(filePath); } catch(e) {}
-    res.status(500).json({ error: err.message || 'Upload failed' });
+    safeSend(500, { error: err.message || 'Upload failed' });
   }
 });
 
