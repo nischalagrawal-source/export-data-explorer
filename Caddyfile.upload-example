@@ -1,0 +1,9 @@
+# Example: allow large uploads (50MB) when using Caddy as reverse proxy.
+# If you get 502 on upload, add this to your Caddyfile for ede.agrovilla.in:
+#
+# ede.agrovilla.in {
+#   request_body {
+#     max_size 50MB
+#   }
+#   reverse_proxy localhost:3001
+# }
