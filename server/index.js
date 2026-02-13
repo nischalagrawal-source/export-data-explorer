@@ -36,15 +36,20 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 // NOTE: Static files are served AFTER all API routes (at the end of file)
 const clientDistPath = path.join(__dirname, '..', 'client', 'dist');
 
-// Uploads directory (for local dev, not used on Render)
+// Uploads directory - use disk storage to avoid memory crashes on large files
 const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
 
-// Multer config - use memory storage for cloud deployment (no disk needed)
+// Multer config - use DISK storage to prevent out-of-memory crashes
 const upload = multer({ 
-  storage: multer.memoryStorage(),
+  storage: multer.diskStorage({
+    destination: uploadsDir,
+    filename: (req, file, cb) => {
+      cb(null, `upload-${Date.now()}-${file.originalname}`);
+    }
+  }),
   limits: { fileSize: 50 * 1024 * 1024 } // 50MB limit
 });
 
@@ -640,16 +645,19 @@ app.post('/api/upload', blockDemo, (req, res, next) => {
     return res.status(400).json({ error: 'No file uploaded' });
   }
 
-  console.log(`📁 File received: ${req.file.originalname}, size: ${req.file.size} bytes`);
+  const filePath = req.file.path;
+  console.log(`📁 File received: ${req.file.originalname}, size: ${req.file.size} bytes, saved to: ${filePath}`);
 
   const { dataType } = req.body;
   if (!dataType || !['fruits', 'vegetables'].includes(dataType)) {
+    // Clean up uploaded file
+    try { fs.unlinkSync(filePath); } catch(e) {}
     return res.status(400).json({ error: 'Invalid data type. Must be "fruits" or "vegetables"' });
   }
 
   try {
-    // Read from buffer (memory) instead of disk
-    const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+    // Read from DISK file instead of memory buffer to reduce RAM usage
+    const workbook = XLSX.readFile(filePath);
     const sheetName = workbook.SheetNames[0];
     const worksheet = workbook.Sheets[sheetName];
     const data = XLSX.utils.sheet_to_json(worksheet);
@@ -657,6 +665,7 @@ app.post('/api/upload', blockDemo, (req, res, next) => {
     console.log(`📊 Parsed ${data.length} rows from Excel`);
 
     if (data.length === 0) {
+      try { fs.unlinkSync(filePath); } catch(e) {}
       return res.status(400).json({ error: 'Excel file is empty' });
     }
 
@@ -684,8 +693,7 @@ app.post('/api/upload', blockDemo, (req, res, next) => {
       startedAt: new Date().toISOString()
     });
 
-    // Return immediately to avoid Render timeout
-    // Include 'inserted' field for backward compatibility with old frontend
+    // Return immediately to avoid timeout
     res.json({
       success: true,
       inserted: data.length,
@@ -697,6 +705,9 @@ app.post('/api/upload', blockDemo, (req, res, next) => {
       dataType,
       columnsFound: excelColumns
     });
+
+    // Clean up the uploaded temp file now (data is already parsed into memory)
+    try { fs.unlinkSync(filePath); } catch(e) {}
 
     // Process in background (after response is sent)
     processUploadInBackground(data, dataType, uploadBatch, jobId, excelColumns).catch(err => {
@@ -711,6 +722,8 @@ app.post('/api/upload', blockDemo, (req, res, next) => {
   } catch (err) {
     console.error('Upload error:', err);
     console.error('Error stack:', err.stack);
+    // Clean up temp file on error
+    try { if (filePath) fs.unlinkSync(filePath); } catch(e) {}
     res.status(500).json({ error: err.message });
   }
 });
@@ -1007,6 +1020,12 @@ async function processUploadInBackground(data, dataType, uploadBatch, jobId, exc
     startedAt: uploadJobs.get(jobId)?.startedAt,
     completedAt: new Date().toISOString()
   });
+
+  // Force garbage collection hint (free memory from large arrays)
+  if (global.gc) {
+    global.gc();
+    console.log('[BG] Garbage collection triggered');
+  }
 }
 
 // ============= ANALYTICS ROUTES =============
