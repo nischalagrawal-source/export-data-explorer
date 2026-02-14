@@ -705,31 +705,73 @@ app.post('/api/upload', blockDemo, (req, res, next) => {
     }
 
     let workbook;
+    const readOpts = { dense: true }; // Reduces memory for large sheets
     if (filePath && fs.existsSync(filePath)) {
-      workbook = XLSX.readFile(filePath);
+      workbook = XLSX.readFile(filePath, readOpts);
     } else if (req.file.buffer) {
-      workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+      workbook = XLSX.read(req.file.buffer, { type: 'buffer', ...readOpts });
     } else {
       return safeSend(400, { error: 'File data missing' });
     }
 
     const sheetName = workbook.SheetNames[0];
     const worksheet = workbook.Sheets[sheetName];
-    const data = XLSX.utils.sheet_to_json(worksheet);
+    const ref = worksheet['!ref'] || 'A1';
+    const range = XLSX.utils.decode_range(ref);
+    const totalDataRows = range.e.r; // 0-based; row 0 is typically header
     try { if (filePath) fs.unlinkSync(filePath); } catch(e) {}
     filePath = null;
 
-    console.log(`📊 Parsed ${data.length} rows from Excel`);
-    if (data.length === 0) {
+    if (totalDataRows < 1) {
       return safeSend(400, { error: 'Excel file is empty' });
     }
 
-    const excelColumns = Object.keys(data[0] || {});
     const uploadBatch = `${Date.now()}-${dataType}`;
     const jobId = uploadBatch;
+    const CHUNK_ROWS = 3500; // Process in chunks to avoid heap OOM
+    const useChunked = totalDataRows > CHUNK_ROWS;
+
+    let excelColumns;
+    if (!useChunked) {
+      const data = XLSX.utils.sheet_to_json(worksheet);
+      excelColumns = Object.keys(data[0] || {});
+      uploadJobs.set(jobId, {
+        status: 'processing',
+        totalRows: data.length,
+        inserted: 0,
+        skipped: 0,
+        noIdCount: 0,
+        dataType,
+        columnsFound: excelColumns,
+        startedAt: new Date().toISOString()
+      });
+      safeSend(200, {
+        success: true,
+        inserted: data.length,
+        skipped: 0,
+        noIdCount: 0,
+        message: `Upload received! Processing ${data.length} rows in background. Data will appear shortly.`,
+        jobId,
+        totalRows: data.length,
+        dataType,
+        columnsFound: excelColumns
+      });
+      processUploadInBackground(data, dataType, uploadBatch, jobId, excelColumns).catch(err => {
+        console.error('Background upload processing error:', err);
+        uploadJobs.set(jobId, { ...uploadJobs.get(jobId), status: 'error', error: err.message });
+      });
+      return;
+    }
+
+    // Chunked path: read header then process row ranges to avoid OOM
+    const headerRangeStr = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: 0, c: range.e.c } });
+    const headerRow = XLSX.utils.sheet_to_json(worksheet, { range: headerRangeStr, header: 1 });
+    const headerArr = headerRow[0] || [];
+    excelColumns = headerArr;
+    const totalRows = totalDataRows; // data rows = 1 to range.e.r (row 0 = header)
     uploadJobs.set(jobId, {
       status: 'processing',
-      totalRows: data.length,
+      totalRows,
       inserted: 0,
       skipped: 0,
       noIdCount: 0,
@@ -737,27 +779,47 @@ app.post('/api/upload', blockDemo, (req, res, next) => {
       columnsFound: excelColumns,
       startedAt: new Date().toISOString()
     });
-
     safeSend(200, {
       success: true,
-      inserted: data.length,
+      inserted: totalRows,
       skipped: 0,
       noIdCount: 0,
-      message: `Upload received! Processing ${data.length} rows in background. Data will appear shortly.`,
+      message: `Upload received! Processing ${totalRows} rows in chunks. Data will appear shortly.`,
       jobId,
-      totalRows: data.length,
+      totalRows,
       dataType,
       columnsFound: excelColumns
     });
 
-    processUploadInBackground(data, dataType, uploadBatch, jobId, excelColumns).catch(err => {
-      console.error('Background upload processing error:', err);
-      uploadJobs.set(jobId, {
-        ...uploadJobs.get(jobId),
-        status: 'error',
-        error: err.message
-      });
-    });
+    (async () => {
+      try {
+        let chunkIndex = 0;
+        for (let startRow = 1; startRow <= range.e.r; startRow += CHUNK_ROWS) {
+          const endRow = Math.min(startRow + CHUNK_ROWS - 1, range.e.r);
+          const chunkRangeStr = XLSX.utils.encode_range({ s: { r: startRow, c: 0 }, e: { r: endRow, c: range.e.c } });
+          const chunkArrays = XLSX.utils.sheet_to_json(worksheet, { range: chunkRangeStr, header: 0 });
+          const chunk = chunkArrays.map(row => {
+            const o = {};
+            headerArr.forEach((h, i) => { o[h] = row[i]; });
+            return o;
+          });
+          const isLastChunk = endRow >= range.e.r;
+          const jobState = uploadJobs.get(jobId) || {};
+          await processUploadInBackground(chunk, dataType, uploadBatch, jobId, excelColumns, {
+            totalRows,
+            startInserted: jobState.inserted || 0,
+            startSkipped: jobState.skipped || 0,
+            startNoIdCount: jobState.noIdCount || 0,
+            isLastChunk
+          });
+          chunkIndex++;
+          if (global.gc) global.gc();
+        }
+      } catch (err) {
+        console.error('Chunked upload error:', err);
+        uploadJobs.set(jobId, { ...uploadJobs.get(jobId), status: 'error', error: err.message });
+      }
+    })();
   } catch (err) {
     console.error('Upload error:', err.message);
     console.error(err.stack);
@@ -766,11 +828,13 @@ app.post('/api/upload', blockDemo, (req, res, next) => {
   }
 });
 
-// Background upload processing function
-async function processUploadInBackground(data, dataType, uploadBatch, jobId, excelColumns) {
-  let inserted = 0;
-  let skipped = 0;
-  let noIdCount = 0;
+// Background upload processing function (opts used for chunked mode)
+async function processUploadInBackground(data, dataType, uploadBatch, jobId, excelColumns, opts = {}) {
+  const totalRows = opts.totalRows ?? data.length;
+  let inserted = opts.startInserted ?? 0;
+  let skipped = opts.startSkipped ?? 0;
+  let noIdCount = opts.startNoIdCount ?? 0;
+  const isLastChunk = opts.hasOwnProperty('isLastChunk') ? opts.isLastChunk : true;
 
   // Column name variations for Indian export data
   const declarationIdNames = [
@@ -868,10 +932,9 @@ async function processUploadInBackground(data, dataType, uploadBatch, jobId, exc
   ];
 
   let debugCount = 0;
-  const totalRows = data.length;
   
   // Parse all rows first, then batch insert for performance
-  console.log(`[BG] Processing ${totalRows} rows...`);
+  console.log(`[BG] Processing ${data.length} rows (total ${totalRows})...`);
   
   const parsedRows = [];
   
@@ -1044,25 +1107,24 @@ async function processUploadInBackground(data, dataType, uploadBatch, jobId, exc
     }
   }
   
-  console.log(`[BG] Import complete: ${inserted} inserted, ${skipped} skipped, ${noIdCount} no ID`);
+  console.log(`[BG] Chunk complete: ${inserted} inserted, ${skipped} skipped, ${noIdCount} no ID`);
 
-  // Mark job as completed
+  // Update job (cumulative counts); mark completed only on last chunk
   uploadJobs.set(jobId, {
-    status: 'completed',
+    status: isLastChunk ? 'completed' : 'processing',
     totalRows,
     inserted,
     skipped,
     noIdCount,
     dataType,
     columnsFound: excelColumns,
+    progress: inserted + skipped,
     startedAt: uploadJobs.get(jobId)?.startedAt,
-    completedAt: new Date().toISOString()
+    ...(isLastChunk && { completedAt: new Date().toISOString() })
   });
 
-  // Force garbage collection hint (free memory from large arrays)
   if (global.gc) {
     global.gc();
-    console.log('[BG] Garbage collection triggered');
   }
 }
 
