@@ -518,7 +518,7 @@ app.get('/api/clients/search', async (req, res) => {
     SELECT DISTINCT consignee_name as name, 
            COUNT(*) as shipment_count,
            SUM(fob_value) as total_fob,
-           GROUP_CONCAT(DISTINCT country_of_destination) as countries
+           STRING_AGG(DISTINCT country_of_destination::text, ',') as countries
     FROM exports 
     WHERE consignee_name IS NOT NULL AND consignee_name != ''
   `;
@@ -1098,7 +1098,7 @@ app.get('/api/analytics/competitors', async (req, res) => {
       SUM(fob_value) as total_fob,
       COUNT(DISTINCT product_description) as product_count,
       COUNT(DISTINCT country_of_destination) as country_count,
-      GROUP_CONCAT(DISTINCT data_type) as categories,
+      STRING_AGG(DISTINCT data_type::text, ',') as categories,
       MIN(shipment_date) as first_shipment,
       MAX(shipment_date) as last_shipment
     FROM exports 
@@ -1155,7 +1155,7 @@ app.get('/api/analytics/clients', async (req, res) => {
       SUM(fob_value) as total_fob,
       COUNT(DISTINCT product_description) as product_count,
       COUNT(DISTINCT exporter_name) as supplier_count,
-      GROUP_CONCAT(DISTINCT data_type) as categories,
+      STRING_AGG(DISTINCT data_type::text, ',') as categories,
       MIN(shipment_date) as first_shipment,
       MAX(shipment_date) as last_shipment
     FROM exports 
@@ -1354,7 +1354,7 @@ app.get('/api/analytics/entity-details', async (req, res) => {
         exporter_name,
         COUNT(DISTINCT declaration_id) as shipment_count,
         SUM(fob_value) as total_fob,
-        GROUP_CONCAT(DISTINCT product_description) as products
+        STRING_AGG(DISTINCT product_description::text, ',') as products
       FROM exports 
       WHERE UPPER(consignee_name) = ?${monthFilter}
       GROUP BY exporter_name
@@ -1658,9 +1658,9 @@ app.get('/api/intelligence/prospective-clients', async (req, res) => {
       COUNT(DISTINCT declaration_id) as total_shipments,
       SUM(fob_value) as total_fob,
       SUM(quantity) as total_quantity,
-      GROUP_CONCAT(DISTINCT hs_code) as hs_codes,
-      GROUP_CONCAT(DISTINCT product_description) as products,
-      GROUP_CONCAT(DISTINCT exporter_name) as current_suppliers
+      STRING_AGG(DISTINCT hs_code::text, ',') as hs_codes,
+      STRING_AGG(DISTINCT product_description::text, ',') as products,
+      STRING_AGG(DISTINCT exporter_name::text, ',') as current_suppliers
     FROM exports 
     WHERE hs_code IN (${placeholders})
     AND UPPER(exporter_name) NOT LIKE ?
@@ -1948,7 +1948,7 @@ app.get('/api/monthly-comparison', async (req, res) => {
           exporter_name as new_supplier,
           COUNT(DISTINCT declaration_id) as shipments,
           SUM(fob_value) as total_fob,
-          GROUP_CONCAT(DISTINCT product_description) as products
+          STRING_AGG(DISTINCT product_description::text, ',') as products
         FROM exports 
         WHERE (${newConditions}) AND month_year = ?
         GROUP BY consignee_name, exporter_name
@@ -1965,7 +1965,7 @@ app.get('/api/monthly-comparison', async (req, res) => {
       curr.exporter_name as new_supplier,
       COUNT(DISTINCT curr.declaration_id) as shipments,
       SUM(curr.fob_value) as total_fob,
-      GROUP_CONCAT(DISTINCT curr.product_description) as products
+      STRING_AGG(DISTINCT curr.product_description::text, ',') as products
     FROM exports curr
     LEFT JOIN (
       SELECT DISTINCT consignee_name, exporter_name 
@@ -2626,9 +2626,9 @@ app.get('/api/export/prospective-clients', async (req, res) => {
       SUM(fob_value) as "Total FOB (USD)",
       ROUND(SUM(fob_value) * 83.5, 2) as "Total FOB (INR)",
       SUM(quantity) as "Total Quantity",
-      GROUP_CONCAT(DISTINCT hs_code) as "HS Codes",
-      GROUP_CONCAT(DISTINCT product_description) as "Products",
-      GROUP_CONCAT(DISTINCT exporter_name) as "Current Suppliers"
+      STRING_AGG(DISTINCT hs_code::text, ',') as "HS Codes",
+      STRING_AGG(DISTINCT product_description::text, ',') as "Products",
+      STRING_AGG(DISTINCT exporter_name::text, ',') as "Current Suppliers"
     FROM exports 
     WHERE hs_code IN (${placeholders})
     AND UPPER(exporter_name) NOT LIKE ?
@@ -3064,7 +3064,7 @@ app.get('/api/export/summary', async (req, res) => {
       COUNT(DISTINCT product_description) as "Products",
       COUNT(DISTINCT country_of_destination) as "Countries",
       COUNT(DISTINCT consignee_name) as "Clients",
-      GROUP_CONCAT(DISTINCT data_type) as "Categories"
+      STRING_AGG(DISTINCT data_type::text, ',') as "Categories"
     FROM exports ${whereClause}
     GROUP BY exporter_name
     ORDER BY "Total FOB" DESC

@@ -14,7 +14,7 @@
     "build": "cd client && npm install && npm run build",
     "build:all": "cd client && npm install && npm run build",
     "build:prod": "npm install && cd client && npm install && npm run build",
-    "start": "node server/index.js",
+    "start": "node --max-old-space-size=512 server/index.js",
     "generate-sample": "node scripts/generate-sample-data.js"
   },
   "dependencies": {

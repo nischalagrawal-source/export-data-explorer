@@ -563,7 +563,7 @@ app.get('/api/intelligence/prospective-clients', async (req, res) => {
 
   const placeholders = hsCodeList.map(() => '?').join(',');
   const prospectiveClients = await all(`SELECT consignee_name, country_of_destination, COUNT(DISTINCT declaration_id) as total_shipments,
-    SUM(fob_value) as total_fob, GROUP_CONCAT(DISTINCT exporter_name) as current_suppliers
+    SUM(fob_value) as total_fob, STRING_AGG(DISTINCT exporter_name::text, ',') as current_suppliers
     FROM exports WHERE hs_code IN (${placeholders}) AND UPPER(exporter_name) NOT LIKE ?
     AND consignee_name IS NOT NULL AND consignee_name != '' GROUP BY consignee_name, country_of_destination
     HAVING total_shipments >= 2 ORDER BY total_fob DESC LIMIT 100`, [...hsCodeList, `%${companyName}%`]);
