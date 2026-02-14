@@ -769,11 +769,11 @@ app.post('/api/upload', blockDemo, (req, res, next) => {
       return;
     }
 
-    // Chunked path: read header as ordered array so column indices match data rows
+    // Chunked path: read header row as raw array of cell values (header:1 = array-of-arrays)
     const headerRangeStr = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: 0, c: range.e.c } });
-    const headerRowArrays = XLSX.utils.sheet_to_json(worksheet, { range: headerRangeStr, header: 0 });
-    const rawHeader = Array.isArray(headerRowArrays[0]) ? headerRowArrays[0] : [];
-    const headerArr = rawHeader.map(c => String(c != null ? c : '').trim());
+    const headerRowRaw = XLSX.utils.sheet_to_json(worksheet, { range: headerRangeStr, header: 1 });
+    const headerArr = (headerRowRaw[0] || []).map(c => String(c != null ? c : '').trim());
+    console.log(`[Chunked] Header row (${headerArr.length} cols):`, headerArr.slice(0, 10), '...');
     excelColumns = headerArr;
     const totalRows = totalDataRows; // data rows = 1 to range.e.r (row 0 = header)
     uploadJobs.set(jobId, {
@@ -804,10 +804,11 @@ app.post('/api/upload', blockDemo, (req, res, next) => {
         for (let startRow = 1; startRow <= range.e.r; startRow += CHUNK_ROWS) {
           const endRow = Math.min(startRow + CHUNK_ROWS - 1, range.e.r);
           const chunkRangeStr = XLSX.utils.encode_range({ s: { r: startRow, c: 0 }, e: { r: endRow, c: range.e.c } });
-          const chunkArrays = XLSX.utils.sheet_to_json(worksheet, { range: chunkRangeStr, header: 0 });
-          const chunk = chunkArrays.map(row => {
+          // header:1 = raw arrays; map to objects using headerArr
+          const chunkRawArrays = XLSX.utils.sheet_to_json(worksheet, { range: chunkRangeStr, header: 1 });
+          const chunk = chunkRawArrays.map(rowArr => {
             const o = {};
-            headerArr.forEach((h, i) => { o[h] = row[i]; });
+            headerArr.forEach((h, i) => { if (h) o[h] = rowArr[i]; });
             return o;
           });
           const isLastChunk = endRow >= range.e.r;
