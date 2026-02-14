@@ -599,29 +599,32 @@ app.put('/api/company', blockDemo, async (req, res) => {
   res.json({ success: true });
 });
 
-// Normalize header/key for matching (trim, strip BOM, collapse spaces)
-const normalizeKey = (s) => String(s).replace(/\uFEFF/g, '').trim().toLowerCase().replace(/[\s_-]+/g, '');
-
 // Helper function to find column value with flexible matching
 const findColumnValue = (row, possibleNames) => {
   const rowKeys = Object.keys(row);
   
-  // Build a map of normalized key names to actual keys (handles BOM, extra spaces)
+  // Build a map of normalized key names to actual keys (trim keys for lenient match)
   const keyMap = {};
   for (const key of rowKeys) {
-    const normalized = normalizeKey(key);
-    if (normalized) keyMap[normalized] = key;
+    const k = typeof key === 'string' ? key.trim() : String(key);
+    const normalized = k.toLowerCase().replace(/[\s_-]+/g, '');
+    if (normalized && !keyMap[normalized]) keyMap[normalized] = key;
   }
   
   // Try each possible name
   for (const name of possibleNames) {
+    const n = typeof name === 'string' ? name.trim() : String(name);
     // Direct match
-    if (row[name] !== undefined && row[name] !== null && String(row[name]).trim() !== '') {
-      return row[name];
+    if (row[n] !== undefined && row[n] !== null && String(row[n]).trim() !== '') {
+      return row[n];
+    }
+    // Try with actual row key that might have different spacing
+    for (const key of rowKeys) {
+      if (key.trim() === n && String(row[key]).trim() !== '') return row[key];
     }
     
     // Normalized match
-    const normalizedName = normalizeKey(name);
+    const normalizedName = n.toLowerCase().replace(/[\s_-]+/g, '');
     if (keyMap[normalizedName]) {
       const val = row[keyMap[normalizedName]];
       if (val !== undefined && val !== null && String(val).trim() !== '') {
@@ -632,7 +635,7 @@ const findColumnValue = (row, possibleNames) => {
   
   // Partial match - check if any key contains any of the possible names
   for (const name of possibleNames) {
-    const normalizedName = normalizeKey(name);
+    const normalizedName = (typeof name === 'string' ? name.trim() : String(name)).toLowerCase().replace(/[\s_-]+/g, '');
     for (const [normalized, actualKey] of Object.entries(keyMap)) {
       if (normalized.includes(normalizedName) || normalizedName.includes(normalized)) {
         const val = row[actualKey];
@@ -766,10 +769,11 @@ app.post('/api/upload', blockDemo, (req, res, next) => {
       return;
     }
 
-    // Chunked path: read header then process row ranges to avoid OOM
+    // Chunked path: read header as ordered array so column indices match data rows
     const headerRangeStr = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: 0, c: range.e.c } });
-    const headerRow = XLSX.utils.sheet_to_json(worksheet, { range: headerRangeStr, header: 1 });
-    const headerArr = headerRow[0] || [];
+    const headerRowArrays = XLSX.utils.sheet_to_json(worksheet, { range: headerRangeStr, header: 0 });
+    const rawHeader = Array.isArray(headerRowArrays[0]) ? headerRowArrays[0] : [];
+    const headerArr = rawHeader.map(c => String(c != null ? c : '').trim());
     excelColumns = headerArr;
     const totalRows = totalDataRows; // data rows = 1 to range.e.r (row 0 = header)
     uploadJobs.set(jobId, {
@@ -841,8 +845,8 @@ async function processUploadInBackground(data, dataType, uploadBatch, jobId, exc
 
   // Column name variations for Indian export data
   const declarationIdNames = [
-    'Declaration No', 'Declaration ID', 'DECLARATION_ID', 'declaration_id', 'Dec ID',
-    'DECLARATION_NO', 'declaration_no', 'Declaration_No',
+    'Declaration ID', 'DECLARATION_ID', 'declaration_id', 'Dec ID',
+    'Declaration No', 'DECLARATION_NO', 'declaration_no', 'Declaration_No',
     'DeclarationNo', 'DECLARATIONNO', 'Dec No', 'DEC_NO', 'DecNo',
     'SB No', 'SB_No', 'SB NO', 'SB_NO', 'SBNO', 'Sb No', 
     'Shipping Bill No', 'SHIPPING_BILL_NO', 'Shipping Bill Number',
@@ -859,24 +863,25 @@ async function processUploadInBackground(data, dataType, uploadBatch, jobId, exc
   ];
   
   const consigneeNames = [
-    'Consinee Name', 'Consignee Name', 'CONSIGNEE_NAME', 'consignee_name', 'Consignee',
+    'Consignee Name', 'CONSIGNEE_NAME', 'consignee_name', 'Consignee',
     'CONSIGNEE', 'Buyer', 'BUYER', 'Buyer Name', 'BUYER_NAME',
     'Foreign Buyer', 'FOREIGN_BUYER', 'Importer', 'IMPORTER',
     'Importer Name', 'Customer', 'CUSTOMER', 'Customer Name',
-    'CONSINEE_NAME', 'Consinee', 'CONSINEE'
+    'Consinee Name', 'CONSINEE_NAME', 'Consinee', 'CONSINEE'
   ];
   
   const productNames = [
-    'Goods Description', 'Product Description', 'PRODUCT_DESCRIPTION', 'product_description',
+    'Product Description', 'PRODUCT_DESCRIPTION', 'product_description',
     'Product', 'PRODUCT', 'Item', 'ITEM', 'Item Description',
     'ITEM_DESCRIPTION', 'Description', 'DESCRIPTION', 'Goods',
-    'GOODS', 'GOODS_DESCRIPTION', 'Goods_Description',
+    'GOODS', 'Goods Description', 'GOODS_DESCRIPTION', 'Goods_Description',
     'Product Name', 'PRODUCT_NAME', 'Commodity', 'COMMODITY', 
     'HS Description', 'Item Name', 'ItemDescription'
   ];
   
   const hsCodeNames = [
-    'HS Code', 'HS Four Digit', 'HS_CODE', 'hs_code', 'HSCode', 'HSCODE', 'HS',
+    'HS Code', 'HS_CODE', 'hs_code', 'HSCode', 'HSCODE', 'HS',
+    'HS Four Digit', 'HS_FOUR_DIGIT', 'Hs Four Digit',
     'ITC Code', 'ITC_CODE', 'ITCCode', 'ITC HS', 'ITC_HS',
     'Tariff Code', 'TARIFF_CODE', 'Chapter', 'CHAPTER'
   ];
@@ -893,9 +898,9 @@ async function processUploadInBackground(data, dataType, uploadBatch, jobId, exc
   ];
   
   const fobNames = [
-    'Fob Usd', 'FOB Value', 'FOB_VALUE', 'fob_value', 'FOB', 'Fob',
-    'FOB USD', 'FOB_USD', 'FOB Usd', 'Fob USD',
-    'Unit Value Usd', 'Unit Value USD',
+    'FOB Value', 'FOB_VALUE', 'fob_value', 'FOB', 'Fob',
+    'FOB USD', 'FOB_USD', 'Fob Usd', 'FOB Usd', 'Fob USD',
+    'Unit Value Usd', 'UNIT_VALUE_USD', 'Unit Value USD',
     'FOB INR', 'FOB_INR', 'Fob Inr', 'Value',
     'VALUE', 'Invoice Value', 'INVOICE_VALUE', 'Total Value',
     'TOTAL_VALUE', 'Amount', 'AMOUNT', 'Price', 'PRICE',
@@ -908,28 +913,28 @@ async function processUploadInBackground(data, dataType, uploadBatch, jobId, exc
   ];
   
   const portLoadingNames = [
-    'Indian Port', 'Port of Loading', 'PORT_OF_LOADING', 'port_of_loading',
-    'INDIAN_PORT', 'Loading Port', 'LOADING_PORT',
+    'Port of Loading', 'PORT_OF_LOADING', 'port_of_loading',
+    'Indian Port', 'INDIAN_PORT', 'Loading Port', 'LOADING_PORT',
     'Port', 'PORT', 'Origin Port', 'ORIGIN_PORT', 'From Port',
     'Departure Port', 'DEPARTURE_PORT', 'POL', 'Port Code'
   ];
   
   const portDischargeNames = [
-    'Destination Port', 'Port of Discharge', 'PORT_OF_DISCHARGE', 'port_of_discharge',
+    'Port of Discharge', 'PORT_OF_DISCHARGE', 'port_of_discharge',
     'Foreign Port', 'FOREIGN_PORT', 'Discharge Port', 'DISCHARGE_PORT',
-    'DESTINATION_PORT', 'To Port', 'POD',
+    'Destination Port', 'DESTINATION_PORT', 'To Port', 'POD',
     'Arrival Port', 'ARRIVAL_PORT', 'Final Port'
   ];
   
   const countryNames = [
-    'Country', 'COUNTRY', 'country', 'Destination Country', 'Country of Destination',
-    'DESTINATION_COUNTRY', 'COUNTRY_OF_DESTINATION',
+    'Country', 'COUNTRY', 'country', 'Destination Country',
+    'DESTINATION_COUNTRY', 'Country of Destination', 'COUNTRY_OF_DESTINATION',
     'Destination', 'DESTINATION', 'Foreign Country', 'FOREIGN_COUNTRY',
     'Importing Country', 'IMPORTING_COUNTRY', 'To Country'
   ];
   
   const dateNames = [
-    'Date', 'Shipment Date', 'SHIPMENT_DATE', 'shipment_date', 'DATE',
+    'Shipment Date', 'SHIPMENT_DATE', 'shipment_date', 'Date', 'DATE',
     'SB Date', 'SB_DATE', 'Shipping Date', 'SHIPPING_DATE',
     'Bill Date', 'BILL_DATE', 'Export Date', 'EXPORT_DATE',
     'Invoice Date', 'INVOICE_DATE', 'Dispatch Date', 'DISPATCH_DATE'
