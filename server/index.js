@@ -599,15 +599,18 @@ app.put('/api/company', blockDemo, async (req, res) => {
   res.json({ success: true });
 });
 
+// Normalize header/key for matching (trim, strip BOM, collapse spaces)
+const normalizeKey = (s) => String(s).replace(/\uFEFF/g, '').trim().toLowerCase().replace(/[\s_-]+/g, '');
+
 // Helper function to find column value with flexible matching
 const findColumnValue = (row, possibleNames) => {
   const rowKeys = Object.keys(row);
   
-  // Build a map of normalized key names to actual keys
+  // Build a map of normalized key names to actual keys (handles BOM, extra spaces)
   const keyMap = {};
   for (const key of rowKeys) {
-    const normalized = key.toLowerCase().replace(/[\s_-]+/g, '');
-    keyMap[normalized] = key;
+    const normalized = normalizeKey(key);
+    if (normalized) keyMap[normalized] = key;
   }
   
   // Try each possible name
@@ -618,7 +621,7 @@ const findColumnValue = (row, possibleNames) => {
     }
     
     // Normalized match
-    const normalizedName = name.toLowerCase().replace(/[\s_-]+/g, '');
+    const normalizedName = normalizeKey(name);
     if (keyMap[normalizedName]) {
       const val = row[keyMap[normalizedName]];
       if (val !== undefined && val !== null && String(val).trim() !== '') {
@@ -629,7 +632,7 @@ const findColumnValue = (row, possibleNames) => {
   
   // Partial match - check if any key contains any of the possible names
   for (const name of possibleNames) {
-    const normalizedName = name.toLowerCase().replace(/[\s_-]+/g, '');
+    const normalizedName = normalizeKey(name);
     for (const [normalized, actualKey] of Object.entries(keyMap)) {
       if (normalized.includes(normalizedName) || normalizedName.includes(normalized)) {
         const val = row[actualKey];
@@ -838,8 +841,8 @@ async function processUploadInBackground(data, dataType, uploadBatch, jobId, exc
 
   // Column name variations for Indian export data
   const declarationIdNames = [
-    'Declaration ID', 'DECLARATION_ID', 'declaration_id', 'Dec ID',
-    'Declaration No', 'DECLARATION_NO', 'declaration_no', 'Declaration_No',
+    'Declaration No', 'Declaration ID', 'DECLARATION_ID', 'declaration_id', 'Dec ID',
+    'DECLARATION_NO', 'declaration_no', 'Declaration_No',
     'DeclarationNo', 'DECLARATIONNO', 'Dec No', 'DEC_NO', 'DecNo',
     'SB No', 'SB_No', 'SB NO', 'SB_NO', 'SBNO', 'Sb No', 
     'Shipping Bill No', 'SHIPPING_BILL_NO', 'Shipping Bill Number',
@@ -856,24 +859,24 @@ async function processUploadInBackground(data, dataType, uploadBatch, jobId, exc
   ];
   
   const consigneeNames = [
-    'Consignee Name', 'CONSIGNEE_NAME', 'consignee_name', 'Consignee',
+    'Consinee Name', 'Consignee Name', 'CONSIGNEE_NAME', 'consignee_name', 'Consignee',
     'CONSIGNEE', 'Buyer', 'BUYER', 'Buyer Name', 'BUYER_NAME',
     'Foreign Buyer', 'FOREIGN_BUYER', 'Importer', 'IMPORTER',
     'Importer Name', 'Customer', 'CUSTOMER', 'Customer Name',
-    'Consinee Name', 'CONSINEE_NAME', 'Consinee', 'CONSINEE'
+    'CONSINEE_NAME', 'Consinee', 'CONSINEE'
   ];
   
   const productNames = [
-    'Product Description', 'PRODUCT_DESCRIPTION', 'product_description',
+    'Goods Description', 'Product Description', 'PRODUCT_DESCRIPTION', 'product_description',
     'Product', 'PRODUCT', 'Item', 'ITEM', 'Item Description',
     'ITEM_DESCRIPTION', 'Description', 'DESCRIPTION', 'Goods',
-    'GOODS', 'Goods Description', 'GOODS_DESCRIPTION', 'Goods_Description',
+    'GOODS', 'GOODS_DESCRIPTION', 'Goods_Description',
     'Product Name', 'PRODUCT_NAME', 'Commodity', 'COMMODITY', 
     'HS Description', 'Item Name', 'ItemDescription'
   ];
   
   const hsCodeNames = [
-    'HS Code', 'HS_CODE', 'hs_code', 'HSCode', 'HSCODE', 'HS',
+    'HS Code', 'HS Four Digit', 'HS_CODE', 'hs_code', 'HSCode', 'HSCODE', 'HS',
     'ITC Code', 'ITC_CODE', 'ITCCode', 'ITC HS', 'ITC_HS',
     'Tariff Code', 'TARIFF_CODE', 'Chapter', 'CHAPTER'
   ];
@@ -890,8 +893,9 @@ async function processUploadInBackground(data, dataType, uploadBatch, jobId, exc
   ];
   
   const fobNames = [
-    'FOB Value', 'FOB_VALUE', 'fob_value', 'FOB', 'Fob',
-    'FOB USD', 'FOB_USD', 'Fob Usd', 'FOB Usd', 'Fob USD',
+    'Fob Usd', 'FOB Value', 'FOB_VALUE', 'fob_value', 'FOB', 'Fob',
+    'FOB USD', 'FOB_USD', 'FOB Usd', 'Fob USD',
+    'Unit Value Usd', 'Unit Value USD',
     'FOB INR', 'FOB_INR', 'Fob Inr', 'Value',
     'VALUE', 'Invoice Value', 'INVOICE_VALUE', 'Total Value',
     'TOTAL_VALUE', 'Amount', 'AMOUNT', 'Price', 'PRICE',
@@ -904,28 +908,28 @@ async function processUploadInBackground(data, dataType, uploadBatch, jobId, exc
   ];
   
   const portLoadingNames = [
-    'Port of Loading', 'PORT_OF_LOADING', 'port_of_loading',
-    'Indian Port', 'INDIAN_PORT', 'Loading Port', 'LOADING_PORT',
+    'Indian Port', 'Port of Loading', 'PORT_OF_LOADING', 'port_of_loading',
+    'INDIAN_PORT', 'Loading Port', 'LOADING_PORT',
     'Port', 'PORT', 'Origin Port', 'ORIGIN_PORT', 'From Port',
     'Departure Port', 'DEPARTURE_PORT', 'POL', 'Port Code'
   ];
   
   const portDischargeNames = [
-    'Port of Discharge', 'PORT_OF_DISCHARGE', 'port_of_discharge',
+    'Destination Port', 'Port of Discharge', 'PORT_OF_DISCHARGE', 'port_of_discharge',
     'Foreign Port', 'FOREIGN_PORT', 'Discharge Port', 'DISCHARGE_PORT',
-    'Destination Port', 'DESTINATION_PORT', 'To Port', 'POD',
+    'DESTINATION_PORT', 'To Port', 'POD',
     'Arrival Port', 'ARRIVAL_PORT', 'Final Port'
   ];
   
   const countryNames = [
-    'Country', 'COUNTRY', 'country', 'Destination Country',
-    'DESTINATION_COUNTRY', 'Country of Destination', 'COUNTRY_OF_DESTINATION',
+    'Country', 'COUNTRY', 'country', 'Destination Country', 'Country of Destination',
+    'DESTINATION_COUNTRY', 'COUNTRY_OF_DESTINATION',
     'Destination', 'DESTINATION', 'Foreign Country', 'FOREIGN_COUNTRY',
     'Importing Country', 'IMPORTING_COUNTRY', 'To Country'
   ];
   
   const dateNames = [
-    'Shipment Date', 'SHIPMENT_DATE', 'shipment_date', 'Date', 'DATE',
+    'Date', 'Shipment Date', 'SHIPMENT_DATE', 'shipment_date', 'DATE',
     'SB Date', 'SB_DATE', 'Shipping Date', 'SHIPPING_DATE',
     'Bill Date', 'BILL_DATE', 'Export Date', 'EXPORT_DATE',
     'Invoice Date', 'INVOICE_DATE', 'Dispatch Date', 'DISPATCH_DATE'
