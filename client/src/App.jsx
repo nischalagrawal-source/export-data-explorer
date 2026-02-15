@@ -35,11 +35,11 @@ api.interceptors.request.use(config => {
   return config;
 });
 
-// Handle 401/403 responses (logout user)
+// Handle 401 responses (logout user) — 403 is NOT an auth failure (it means role restriction)
 api.interceptors.response.use(
   response => response,
   error => {
-    if (error.response && (error.response.status === 401 || error.response.status === 403)) {
+    if (error.response && error.response.status === 401) {
       localStorage.removeItem('ede_token');
       localStorage.removeItem('ede_user');
       window.location.reload();
@@ -807,15 +807,17 @@ function AuthenticatedApp({ currentUser, onLogout }) {
 
   // Fetch initial data
   useEffect(() => {
-    fetchCompetitors();
-    fetchClients();
-    fetchCompany();
+    if (!isUploader) {
+      fetchCompetitors();
+      fetchClients();
+      fetchCompany();
+    }
     fetchMonths();
   }, []);
 
-  // Fetch analytics when month changes
+  // Fetch analytics when month changes (skip for uploader)
   useEffect(() => {
-    if (months.length > 0) {
+    if (months.length > 0 && !isUploader) {
       fetchDashboard();
       fetchCompetitorAnalytics();
       fetchClientAnalytics();
