@@ -795,11 +795,16 @@ app.post('/api/upload/validate', blockDemo, (req, res, next) => {
       let otherCodes = 0;
       for (let r = 1; r < sampleSize; r++) {
         const hsVal = String(sampleData[r]?.[hsColIdx] || '').trim();
-        if (hsVal.startsWith('08')) fruitsCodes++;
-        else if (hsVal.startsWith('07')) vegCodes++;
+        // HS codes can be: "08xx" (with leading zero) or "8xx" (numeric, no leading zero)
+        // Fruits = chapter 08 (starts with 08 or 8), Vegetables = chapter 07 (starts with 07 or 7)
+        const isFruit = hsVal.startsWith('08') || (/^8\d/.test(hsVal) && !hsVal.startsWith('08'));
+        const isVeg = hsVal.startsWith('07') || (/^7\d/.test(hsVal) && !hsVal.startsWith('07'));
+        if (isFruit) fruitsCodes++;
+        else if (isVeg) vegCodes++;
         else if (hsVal.length > 0) otherCodes++;
       }
 
+      console.log(`[Validate] HS code sample: ${fruitsCodes} fruit(08/8xx), ${vegCodes} veg(07/7xx), ${otherCodes} other. Selected: ${dataType}`);
       const totalSampled = fruitsCodes + vegCodes + otherCodes;
       if (totalSampled > 0) {
         if (dataType === 'fruits' && vegCodes > fruitsCodes) {
