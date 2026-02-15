@@ -151,6 +151,20 @@ const blockDemo = (req, res, next) => {
   next();
 };
 
+// Restrict uploader role — only allow upload-related and auth endpoints
+const uploaderAllowedPaths = [
+  '/api/auth/', '/api/upload', '/api/upload-status', '/api/months', '/api/debug'
+];
+const restrictUploader = (req, res, next) => {
+  if (req.user && req.user.role === 'uploader') {
+    const allowed = uploaderAllowedPaths.some(p => req.path.startsWith(p));
+    if (!allowed) {
+      return res.status(403).json({ error: 'Your account only has access to the upload feature.' });
+    }
+  }
+  next();
+};
+
 // ============= AUTH ROUTES (PUBLIC) =============
 
 // Login
@@ -309,7 +323,7 @@ app.post('/api/users', authenticateToken, requireAdmin, async (req, res) => {
       return res.status(400).json({ error: 'Password must be at least 6 characters' });
     }
     
-    const validRole = role === 'admin' ? 'admin' : 'user';
+    const validRole = ['admin', 'user', 'uploader'].includes(role) ? role : 'user';
     const passwordHash = await bcrypt.hash(password, 10);
     
     await run(
@@ -352,7 +366,7 @@ app.put('/api/users/:id', authenticateToken, requireAdmin, async (req, res) => {
     }
     
     if (role !== undefined) {
-      const validRole = role === 'admin' ? 'admin' : 'user';
+      const validRole = ['admin', 'user', 'uploader'].includes(role) ? role : 'user';
       await run('UPDATE users SET role = ? WHERE id = ?', [validRole, userId]);
     }
     
@@ -391,7 +405,11 @@ app.use('/api', (req, res, next) => {
   if (req.path === '/auth/login' || req.path === '/auth/demo-login' || req.path === '/debug' || req.path.startsWith('/upload/status/')) {
     return next();
   }
-  authenticateToken(req, res, next);
+  authenticateToken(req, res, (err) => {
+    if (err) return next(err);
+    // After auth, restrict uploader role to allowed paths only
+    restrictUploader(req, res, next);
+  });
 });
 
 // Database helper functions imported from db-pg.js
