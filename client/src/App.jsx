@@ -11,7 +11,7 @@ import {
   LayoutDashboard, Target, UserCheck, Building, Settings, Menu, X,
   Download, FileDown, Lightbulb, ShoppingCart, UserPlus, FileText,
   MessageSquare, Send, Bug, Sparkles, HelpCircle, FileSearch, FilePlus2,
-  LogOut, Lock, User, Eye, EyeOff, Shield, UserCog, Key
+  LogOut, Lock, User, Eye, EyeOff, Shield, UserCog, Key, Database
 } from 'lucide-react';
 
 // API Base URL - always use relative path (works on Vercel)
@@ -317,6 +317,182 @@ const LoginPage = ({ onLogin }) => {
           Agrovilla Export Data Explorer
         </p>
       </div>
+    </div>
+  );
+};
+
+// Data Management Component (Admin Only)
+const DataManagement = () => {
+  const [summary, setSummary] = useState([]);
+  const [uploadLog, setUploadLog] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [deleting, setDeleting] = useState(null);
+
+  const fetchSummary = async () => {
+    try {
+      setLoading(true);
+      const res = await api.get('/data-management/summary');
+      setSummary(res.data.data || []);
+      setUploadLog(res.data.uploadLog || []);
+    } catch (err) {
+      console.error('Error fetching data summary:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { fetchSummary(); }, []);
+
+  const handleDelete = async (monthYear, dataType) => {
+    const label = `${dataType} data for ${monthYear}`;
+    if (!window.confirm(`Are you sure you want to delete all ${label}? This cannot be undone.`)) return;
+    try {
+      setDeleting(`${monthYear}-${dataType}`);
+      const res = await api.delete(`/data-management/${monthYear}/${dataType}`);
+      alert(`Deleted ${res.data.deleted} rows of ${label}.`);
+      fetchSummary();
+    } catch (err) {
+      alert(`Error deleting: ${err.response?.data?.error || err.message}`);
+    } finally {
+      setDeleting(null);
+    }
+  };
+
+  const handleDeleteMonth = async (monthYear) => {
+    if (!window.confirm(`Delete ALL data (fruits + vegetables) for ${monthYear}? This cannot be undone.`)) return;
+    try {
+      setDeleting(monthYear);
+      const res = await api.delete(`/data-management/${monthYear}`);
+      alert(`Deleted ${res.data.deleted} rows for ${monthYear}.`);
+      fetchSummary();
+    } catch (err) {
+      alert(`Error: ${err.response?.data?.error || err.message}`);
+    } finally {
+      setDeleting(null);
+    }
+  };
+
+  // Group by month
+  const monthGroups = {};
+  summary.forEach(row => {
+    if (!monthGroups[row.month_year]) monthGroups[row.month_year] = [];
+    monthGroups[row.month_year].push(row);
+  });
+  const sortedMonths = Object.keys(monthGroups).sort().reverse();
+  const totalRows = summary.reduce((s, r) => s + parseInt(r.row_count), 0);
+
+  return (
+    <div className="animate-fade-in space-y-6">
+      <div className="glass-card rounded-xl p-6">
+        <div className="flex items-center justify-between mb-6">
+          <div className="flex items-center gap-3">
+            <Database className="w-6 h-6 text-amber-400" />
+            <h3 className="text-lg font-semibold text-white">Data Management</h3>
+            <span className="text-xs bg-white/10 px-2 py-1 rounded text-slate-400">
+              {totalRows.toLocaleString()} total rows | {sortedMonths.length} months
+            </span>
+          </div>
+          <button onClick={fetchSummary} className="btn-secondary text-sm flex items-center gap-2">
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Refresh
+          </button>
+        </div>
+
+        {loading ? (
+          <div className="text-center py-8"><div className="spinner mx-auto"></div></div>
+        ) : sortedMonths.length === 0 ? (
+          <p className="text-slate-400 text-center py-8">No data in the database. Upload files to get started.</p>
+        ) : (
+          <div className="space-y-3">
+            {sortedMonths.map(month => {
+              const rows = monthGroups[month];
+              const monthTotal = rows.reduce((s, r) => s + parseInt(r.row_count), 0);
+              return (
+                <div key={month} className="bg-white/5 rounded-lg p-4 border border-white/10">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-3">
+                      <Calendar className="w-5 h-5 text-amber-400" />
+                      <span className="text-white font-semibold text-lg">{month}</span>
+                      <span className="text-xs bg-white/10 px-2 py-1 rounded text-slate-400">
+                        {monthTotal.toLocaleString()} rows
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => handleDeleteMonth(month)}
+                      disabled={deleting === month}
+                      className="text-rose-400 hover:text-rose-300 text-sm flex items-center gap-1 px-3 py-1 rounded bg-rose-500/10 hover:bg-rose-500/20 transition-all disabled:opacity-50"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" /> Delete All
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    {rows.map(row => (
+                      <div key={`${row.month_year}-${row.data_type}`} className="flex items-center justify-between bg-white/5 rounded-lg px-4 py-3">
+                        <div className="flex items-center gap-3">
+                          <span className={`text-sm font-medium px-2 py-0.5 rounded ${row.data_type === 'fruits' ? 'bg-amber-500/20 text-amber-400' : 'bg-emerald-500/20 text-emerald-400'}`}>
+                            {row.data_type === 'fruits' ? '🍎 Fruits' : '🥬 Vegetables'}
+                          </span>
+                          <div className="text-sm text-slate-300">
+                            <span className="font-medium">{parseInt(row.row_count).toLocaleString()}</span> rows
+                            <span className="text-slate-500 ml-2">|</span>
+                            <span className="text-slate-400 ml-2">{parseInt(row.unique_exporters)} exporters</span>
+                            <span className="text-slate-500 ml-2">|</span>
+                            <span className="text-slate-400 ml-2">${parseFloat(row.total_fob || 0).toLocaleString(undefined, {maximumFractionDigits: 0})} FOB</span>
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => handleDelete(row.month_year, row.data_type)}
+                          disabled={deleting === `${row.month_year}-${row.data_type}`}
+                          className="text-rose-400 hover:text-rose-300 p-1.5 rounded hover:bg-rose-500/20 transition-all disabled:opacity-50"
+                          title={`Delete ${row.data_type} for ${row.month_year}`}
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Upload History */}
+      {uploadLog.length > 0 && (
+        <div className="glass-card rounded-xl p-6">
+          <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+            <FileText className="w-5 h-5 text-sky-400" /> Upload History
+          </h3>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-slate-400 border-b border-white/10">
+                  <th className="text-left p-3">Filename</th>
+                  <th className="text-left p-3">Type</th>
+                  <th className="text-left p-3">Rows</th>
+                  <th className="text-left p-3">Uploaded By</th>
+                  <th className="text-left p-3">Date</th>
+                </tr>
+              </thead>
+              <tbody>
+                {uploadLog.map((log, i) => (
+                  <tr key={i} className="border-b border-white/5 hover:bg-white/5">
+                    <td className="p-3 text-white">{log.filename}</td>
+                    <td className="p-3">
+                      <span className={`text-xs px-2 py-0.5 rounded ${log.data_type === 'fruits' ? 'bg-amber-500/20 text-amber-400' : 'bg-emerald-500/20 text-emerald-400'}`}>
+                        {log.data_type}
+                      </span>
+                    </td>
+                    <td className="p-3 text-slate-300">{parseInt(log.row_count || 0).toLocaleString()}</td>
+                    <td className="p-3 text-slate-300">{log.uploaded_by}</td>
+                    <td className="p-3 text-slate-400">{new Date(log.uploaded_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -1157,12 +1333,21 @@ function AuthenticatedApp({ currentUser, onLogout }) {
             const job = statusRes.data;
             
             if (job.status === 'completed') {
+              let skipDetail = '';
+              if (job.skipReasons && job.skipped > 0) {
+                const reasons = [];
+                if (job.skipReasons.duplicate > 0) reasons.push(`${job.skipReasons.duplicate} duplicates`);
+                if (job.skipReasons.noId > 0) reasons.push(`${job.skipReasons.noId} missing ID`);
+                if (job.skipReasons.error > 0) reasons.push(`${job.skipReasons.error} errors`);
+                skipDetail = reasons.length > 0 ? ` (${reasons.join(', ')})` : '';
+              }
               setUploadStatus({
                 success: job.inserted > 0,
                 message: job.inserted > 0 
-                  ? `Successfully imported ${job.inserted} records (${job.skipped} skipped)`
+                  ? `Successfully imported ${job.inserted} records. ${job.skipped > 0 ? `${job.skipped} skipped${skipDetail}.` : ''}`
                   : `No records imported. ${job.skipped} rows processed but couldn't match required columns.`,
-                columnsFound: job.columnsFound
+                columnsFound: job.columnsFound,
+                skipReasons: job.skipReasons
               });
               setLoading(false);
               fetchMonths();
@@ -1627,12 +1812,20 @@ Generated by Export Data Explorer
                 onClick={() => setActiveTab('settings')}
               />
               {currentUser?.role === 'admin' && (
-                <NavItem
-                  icon={UserCog}
-                  label={sidebarOpen ? "Users" : ""}
-                  active={activeTab === 'users'}
-                  onClick={() => setActiveTab('users')}
-                />
+                <>
+                  <NavItem
+                    icon={Database}
+                    label={sidebarOpen ? "Data Management" : ""}
+                    active={activeTab === 'data-management'}
+                    onClick={() => setActiveTab('data-management')}
+                  />
+                  <NavItem
+                    icon={UserCog}
+                    label={sidebarOpen ? "Users" : ""}
+                    active={activeTab === 'users'}
+                    onClick={() => setActiveTab('users')}
+                  />
+                </>
               )}
             </>
           )}
@@ -1690,6 +1883,7 @@ Generated by Export Data Explorer
                 {activeTab === 'custom-reports' && 'Generate custom reports by country or company'}
                 {activeTab === 'settings' && 'Configure your company and preferences'}
                 {activeTab === 'users' && 'Manage user accounts and permissions'}
+                {activeTab === 'data-management' && 'View, manage and delete uploaded data by month'}
               </p>
             </div>
             <div className="flex items-center gap-4">
@@ -3714,6 +3908,11 @@ Generated by Export Data Explorer
                 </div>
               </div>
             </div>
+          )}
+
+          {/* Data Management Tab (Admin Only) */}
+          {activeTab === 'data-management' && currentUser?.role === 'admin' && (
+            <DataManagement />
           )}
 
           {/* Users Tab (Admin Only) */}

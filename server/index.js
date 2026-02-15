@@ -1014,6 +1014,8 @@ app.post('/api/upload', blockDemo, (req, res, next) => {
             startInserted: jobState.inserted || 0,
             startSkipped: jobState.skipped || 0,
             startNoIdCount: jobState.noIdCount || 0,
+            startDupCount: jobState.dupCount || 0,
+            skipReasons: jobState.skipReasons || { noId: 0, duplicate: 0, error: 0 },
             isLastChunk
           });
           chunkIndex++;
@@ -1138,6 +1140,8 @@ async function processUploadInBackground(data, dataType, uploadBatch, jobId, exc
   ];
 
   let debugCount = 0;
+  let dupCount = opts.startDupCount ?? 0; // duplicates skipped by ON CONFLICT
+  const skipReasons = opts.skipReasons ?? { noId: 0, duplicate: 0, error: 0 };
   
   // Parse all rows first, then batch insert for performance
   console.log(`[BG] Processing ${data.length} rows (total ${totalRows})...`);
@@ -1238,6 +1242,7 @@ async function processUploadInBackground(data, dataType, uploadBatch, jobId, exc
     } else {
       noIdCount++;
       skipped++;
+      skipReasons.noId++;
     }
   }
   
@@ -1273,8 +1278,11 @@ async function processUploadInBackground(data, dataType, uploadBatch, jobId, exc
       const sql = `INSERT INTO ede_exports (${columns.join(', ')}) VALUES ${values.join(', ')} ON CONFLICT (declaration_id, data_type) DO NOTHING`;
       const result = await pgPool.query(sql, params);
       const actualInserted = result.rowCount || 0;
+      const batchDups = batch.length - actualInserted;
       inserted += actualInserted;
-      skipped += batch.length - actualInserted;
+      skipped += batchDups;
+      dupCount += batchDups;
+      skipReasons.duplicate += batchDups;
     } catch (batchErr) {
       // If batch fails, try inserting rows individually to identify problematic rows
       console.error(`[BG] Batch insert error at rows ${i}-${i + batch.length}:`, batchErr.message);
@@ -1290,12 +1298,13 @@ async function processUploadInBackground(data, dataType, uploadBatch, jobId, exc
             ON CONFLICT (declaration_id, data_type) DO NOTHING
           `, rowData);
           if (singleResult.changes > 0) inserted++;
-          else skipped++;
+          else { skipped++; dupCount++; skipReasons.duplicate++; }
         } catch (singleErr) {
           if (skipped < 5) {
             console.error(`[BG] Row insert error: ${singleErr.message}`);
           }
           skipped++;
+          skipReasons.error++;
         }
       }
     }
@@ -1308,6 +1317,8 @@ async function processUploadInBackground(data, dataType, uploadBatch, jobId, exc
         inserted,
         skipped,
         noIdCount,
+        dupCount,
+        skipReasons,
         dataType,
         columnsFound: excelColumns,
         progress: Math.min(i + BATCH_SIZE, parsedRows.length),
@@ -1326,6 +1337,8 @@ async function processUploadInBackground(data, dataType, uploadBatch, jobId, exc
     inserted,
     skipped,
     noIdCount,
+    dupCount,
+    skipReasons,
     dataType,
     columnsFound: excelColumns,
     progress: inserted + skipped,
@@ -1337,6 +1350,79 @@ async function processUploadInBackground(data, dataType, uploadBatch, jobId, exc
     global.gc();
   }
 }
+
+// ============= DATA MANAGEMENT ROUTES (Admin only) =============
+
+// Get month-wise data summary
+app.get('/api/data-management/summary', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const pgPool = getPool();
+    const result = await pgPool.query(`
+      SELECT 
+        month_year,
+        data_type,
+        COUNT(*) as row_count,
+        COUNT(DISTINCT declaration_id) as unique_declarations,
+        COUNT(DISTINCT exporter_name) as unique_exporters,
+        MIN(created_at) as first_uploaded,
+        ROUND(SUM(fob_value)::numeric, 2) as total_fob
+      FROM ede_exports
+      WHERE month_year IS NOT NULL
+      GROUP BY month_year, data_type
+      ORDER BY month_year DESC, data_type
+    `);
+
+    // Also get upload log
+    const logs = await pgPool.query(`
+      SELECT filename, data_type, row_count, uploaded_by, uploaded_at
+      FROM ede_upload_log
+      ORDER BY uploaded_at DESC
+      LIMIT 50
+    `);
+
+    res.json({ 
+      data: result.rows,
+      uploadLog: logs.rows
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete data for a specific month and data type
+app.delete('/api/data-management/:monthYear/:dataType', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { monthYear, dataType } = req.params;
+    if (!monthYear || !['fruits', 'vegetables'].includes(dataType)) {
+      return res.status(400).json({ error: 'Invalid month or data type' });
+    }
+    const pgPool = getPool();
+    const result = await pgPool.query(
+      'DELETE FROM ede_exports WHERE month_year = $1 AND data_type = $2',
+      [monthYear, dataType]
+    );
+    console.log(`[Admin] Deleted ${result.rowCount} rows for ${dataType} ${monthYear} by ${req.user.username}`);
+    res.json({ success: true, deleted: result.rowCount, monthYear, dataType });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete ALL data for a specific month (both fruits and vegetables)
+app.delete('/api/data-management/:monthYear', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { monthYear } = req.params;
+    const pgPool = getPool();
+    const result = await pgPool.query(
+      'DELETE FROM ede_exports WHERE month_year = $1',
+      [monthYear]
+    );
+    console.log(`[Admin] Deleted ${result.rowCount} rows for all data in ${monthYear} by ${req.user.username}`);
+    res.json({ success: true, deleted: result.rowCount, monthYear });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ============= ANALYTICS ROUTES =============
 
