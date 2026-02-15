@@ -1078,7 +1078,39 @@ function AuthenticatedApp({ currentUser, onLogout }) {
       return;
     }
 
+    // Step 1: Validate file first (check duplicates & HS code mismatch)
     setLoading(true);
+    setUploadStatus({ success: true, message: `Validating ${file.name}...` });
+
+    try {
+      const validateForm = new FormData();
+      validateForm.append('file', file);
+      validateForm.append('dataType', uploadType);
+      const valRes = await api.post('/upload/validate', validateForm, { timeout: 120000 });
+      const { warnings } = valRes.data;
+
+      if (warnings && warnings.length > 0) {
+        const warningMessages = warnings.map(w => {
+          if (w.type === 'duplicate') return `⚠️ DUPLICATE FILE: ${w.message}`;
+          if (w.type === 'same_name') return `⚠️ SAME FILENAME: ${w.message}`;
+          if (w.type === 'hs_mismatch') return `🚨 CATEGORY MISMATCH: ${w.message}`;
+          return w.message;
+        }).join('\n\n');
+
+        const proceed = window.confirm(`${warningMessages}\n\nDo you still want to proceed with the upload?`);
+        if (!proceed) {
+          setLoading(false);
+          setUploadStatus({ success: false, message: 'Upload cancelled by user.' });
+          e.target.value = '';
+          return;
+        }
+      }
+    } catch (valErr) {
+      console.error('Validation error:', valErr);
+      // If validation fails, still allow upload (don't block)
+    }
+
+    // Step 2: Proceed with actual upload
     setUploadStatus({ success: true, message: `Uploading ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)...` });
 
     const formData = new FormData();
@@ -1127,11 +1159,13 @@ function AuthenticatedApp({ currentUser, onLogout }) {
               });
               setLoading(false);
               fetchMonths();
-              fetchDashboard();
-              fetchCompetitorAnalytics();
-              fetchClientAnalytics();
-              fetchCompanyComparison();
-              fetchTrends();
+              if (!isUploader) {
+                fetchDashboard();
+                fetchCompetitorAnalytics();
+                fetchClientAnalytics();
+                fetchCompanyComparison();
+                fetchTrends();
+              }
               return;
             } else if (job.status === 'error') {
               setUploadStatus({

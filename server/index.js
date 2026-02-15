@@ -3,6 +3,7 @@ import cors from 'cors';
 import multer from 'multer';
 import path from 'path';
 import os from 'os';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import XLSX from 'xlsx';
 import fs from 'fs';
@@ -153,7 +154,7 @@ const blockDemo = (req, res, next) => {
 
 // Restrict uploader role — only allow upload-related and auth endpoints
 const uploaderAllowedPaths = [
-  '/api/auth/', '/api/upload', '/api/upload-status', '/api/months', '/api/debug'
+  '/api/auth/', '/api/upload', '/api/upload-status', '/api/months', '/api/debug', '/api/upload/validate'
 ];
 const restrictUploader = (req, res, next) => {
   if (req.user && req.user.role === 'uploader') {
@@ -420,6 +421,26 @@ async function initDb() {
   const success = await initDatabase();
   if (success) {
     console.log('📦 Database initialized (Neon PostgreSQL)');
+    // Create upload log table if it doesn't exist
+    try {
+      const pgPool = getPool();
+      await pgPool.query(`
+        CREATE TABLE IF NOT EXISTS ede_upload_log (
+          id SERIAL PRIMARY KEY,
+          filename TEXT NOT NULL,
+          file_hash TEXT NOT NULL,
+          file_size INTEGER,
+          data_type TEXT NOT NULL,
+          row_count INTEGER,
+          uploaded_by TEXT,
+          uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+      await pgPool.query('CREATE INDEX IF NOT EXISTS idx_upload_log_hash ON ede_upload_log(file_hash)');
+      await pgPool.query('CREATE INDEX IF NOT EXISTS idx_upload_log_filename ON ede_upload_log(filename)');
+    } catch (e) {
+      console.error('Upload log table creation error:', e.message);
+    }
   } else {
     console.log('⚠️ Database not available');
   }
@@ -683,6 +704,136 @@ app.get('/api/upload/status/:jobId', (req, res) => {
   }
 });
 
+// ============= FILE UPLOAD VALIDATION =============
+app.post('/api/upload/validate', blockDemo, (req, res, next) => {
+  upload.single('file')(req, res, (err) => {
+    if (err) return res.status(400).json({ error: err.message });
+    next();
+  });
+}, async (req, res) => {
+  let filePath = null;
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file' });
+    filePath = req.file.path || null;
+    const { dataType } = req.body;
+    const warnings = [];
+
+    // 1. Compute file hash for duplicate detection
+    let fileBuffer;
+    if (filePath && fs.existsSync(filePath)) {
+      fileBuffer = fs.readFileSync(filePath);
+    } else if (req.file.buffer) {
+      fileBuffer = req.file.buffer;
+    } else {
+      return res.status(400).json({ error: 'File data missing' });
+    }
+    const fileHash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
+
+    // Check if this exact file was uploaded before
+    const pgPool = getPool();
+    const dupCheck = await pgPool.query(
+      'SELECT filename, data_type, uploaded_by, uploaded_at FROM ede_upload_log WHERE file_hash = $1 ORDER BY uploaded_at DESC LIMIT 1',
+      [fileHash]
+    );
+    if (dupCheck.rows.length > 0) {
+      const prev = dupCheck.rows[0];
+      const uploadDate = new Date(prev.uploaded_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+      warnings.push({
+        type: 'duplicate',
+        message: `This exact file was already uploaded on ${uploadDate} as "${prev.filename}" (${prev.data_type}). Duplicate rows will be skipped.`
+      });
+    }
+
+    // Also check by filename
+    const nameCheck = await pgPool.query(
+      'SELECT filename, data_type, uploaded_by, uploaded_at FROM ede_upload_log WHERE filename = $1 ORDER BY uploaded_at DESC LIMIT 1',
+      [req.file.originalname]
+    );
+    if (nameCheck.rows.length > 0 && dupCheck.rows.length === 0) {
+      const prev = nameCheck.rows[0];
+      const uploadDate = new Date(prev.uploaded_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+      warnings.push({
+        type: 'same_name',
+        message: `A file named "${prev.filename}" was previously uploaded on ${uploadDate} (${prev.data_type}). This appears to be a different version.`
+      });
+    }
+
+    // 2. Read a sample of HS codes to check fruits vs vegetables mismatch
+    let workbook;
+    const readOpts = { dense: true };
+    if (filePath && fs.existsSync(filePath)) {
+      workbook = XLSX.readFile(filePath, readOpts);
+    } else {
+      workbook = XLSX.read(fileBuffer, { type: 'buffer', ...readOpts });
+    }
+    const sheetName = workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[sheetName];
+    // Read first 200 rows to sample HS codes
+    const sampleData = XLSX.utils.sheet_to_json(worksheet, { range: 0, header: 1 });
+    const headerRow = (sampleData[0] || []).map(c => String(c || '').trim());
+    
+    // Find HS code column index
+    const hsAliases = ['HS Code', 'HS_CODE', 'hs_code', 'HSCode', 'HSCODE', 'HS', 'HS Four Digit', 'HS_FOUR_DIGIT', 'Hs Four Digit', 'ITC Code', 'ITC_CODE', 'Tariff Code', 'Chapter'];
+    let hsColIdx = -1;
+    for (let i = 0; i < headerRow.length; i++) {
+      const cleanKey = headerRow[i].toLowerCase().replace(/[^a-z0-9]/g, '');
+      for (const alias of hsAliases) {
+        if (cleanKey === alias.toLowerCase().replace(/[^a-z0-9]/g, '')) {
+          hsColIdx = i;
+          break;
+        }
+      }
+      if (hsColIdx >= 0) break;
+    }
+
+    if (hsColIdx >= 0 && dataType) {
+      // Sample up to 200 data rows
+      const sampleSize = Math.min(sampleData.length, 201);
+      let fruitsCodes = 0;
+      let vegCodes = 0;
+      let otherCodes = 0;
+      for (let r = 1; r < sampleSize; r++) {
+        const hsVal = String(sampleData[r]?.[hsColIdx] || '').trim();
+        if (hsVal.startsWith('08')) fruitsCodes++;
+        else if (hsVal.startsWith('07')) vegCodes++;
+        else if (hsVal.length > 0) otherCodes++;
+      }
+
+      const totalSampled = fruitsCodes + vegCodes + otherCodes;
+      if (totalSampled > 0) {
+        if (dataType === 'fruits' && vegCodes > fruitsCodes) {
+          warnings.push({
+            type: 'hs_mismatch',
+            message: `You selected "Fruits" but the file contains mostly vegetable HS codes (07xx). ${vegCodes} vegetable codes vs ${fruitsCodes} fruit codes found in sample. Did you mean to upload as Vegetables?`
+          });
+        } else if (dataType === 'vegetables' && fruitsCodes > vegCodes) {
+          warnings.push({
+            type: 'hs_mismatch',
+            message: `You selected "Vegetables" but the file contains mostly fruit HS codes (08xx). ${fruitsCodes} fruit codes vs ${vegCodes} vegetable codes found in sample. Did you mean to upload as Fruits?`
+          });
+        }
+      }
+    }
+
+    // Clean up temp file
+    try { if (filePath) fs.unlinkSync(filePath); } catch(e) {}
+
+    const totalRows = sampleData.length - 1; // minus header
+    res.json({ 
+      valid: true, 
+      warnings, 
+      fileHash, 
+      filename: req.file.originalname,
+      fileSize: req.file.size,
+      totalRows
+    });
+  } catch (err) {
+    try { if (filePath) fs.unlinkSync(filePath); } catch(e) {}
+    console.error('Validation error:', err);
+    res.status(500).json({ error: `Validation error: ${err.message}` });
+  }
+});
+
 // ============= FILE UPLOAD ROUTE =============
 app.post('/api/upload', blockDemo, (req, res, next) => {
   // Extend timeout for large file uploads (10 minutes)
@@ -728,12 +879,21 @@ app.post('/api/upload', blockDemo, (req, res, next) => {
       return safeSend(400, { error: 'Invalid data type. Must be "fruits" or "vegetables"' });
     }
 
+    // Compute file hash for upload logging
+    let fileBuffer;
+    if (filePath && fs.existsSync(filePath)) {
+      fileBuffer = fs.readFileSync(filePath);
+    } else if (req.file.buffer) {
+      fileBuffer = req.file.buffer;
+    }
+    const fileHash = fileBuffer ? crypto.createHash('sha256').update(fileBuffer).digest('hex') : 'unknown';
+
     let workbook;
     const readOpts = { dense: true }; // Reduces memory for large sheets
     if (filePath && fs.existsSync(filePath)) {
       workbook = XLSX.readFile(filePath, readOpts);
-    } else if (req.file.buffer) {
-      workbook = XLSX.read(req.file.buffer, { type: 'buffer', ...readOpts });
+    } else if (fileBuffer) {
+      workbook = XLSX.read(fileBuffer, { type: 'buffer', ...readOpts });
     } else {
       return safeSend(400, { error: 'File data missing' });
     }
@@ -745,6 +905,18 @@ app.post('/api/upload', blockDemo, (req, res, next) => {
     const totalDataRows = range.e.r; // 0-based; row 0 is typically header
     try { if (filePath) fs.unlinkSync(filePath); } catch(e) {}
     filePath = null;
+    fileBuffer = null; // Free memory
+
+    // Log this upload
+    try {
+      const pgPool = getPool();
+      await pgPool.query(
+        'INSERT INTO ede_upload_log (filename, file_hash, file_size, data_type, row_count, uploaded_by) VALUES ($1, $2, $3, $4, $5, $6)',
+        [req.file.originalname, fileHash, req.file.size, dataType, totalDataRows, req.user?.username || 'unknown']
+      );
+    } catch (logErr) {
+      console.error('Upload log error:', logErr.message);
+    }
 
     if (totalDataRows < 1) {
       return safeSend(400, { error: 'Excel file is empty' });
