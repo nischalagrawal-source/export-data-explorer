@@ -153,8 +153,9 @@ const blockDemo = (req, res, next) => {
 };
 
 // Restrict uploader role — only allow upload-related and auth endpoints
+// Paths are relative to /api mount (req.path inside app.use('/api') strips the /api prefix)
 const uploaderAllowedPaths = [
-  '/api/auth/', '/api/upload', '/api/upload-status', '/api/months', '/api/debug', '/api/upload/validate'
+  '/auth/', '/upload', '/analytics/months', '/debug'
 ];
 const restrictUploader = (req, res, next) => {
   if (req.user && req.user.role === 'uploader') {
