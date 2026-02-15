@@ -1074,23 +1074,27 @@ async function processUploadInBackground(data, dataType, uploadBatch, jobId, exc
     }
     
     try {
-      const sql = `INSERT INTO ede_exports (${columns.join(', ')}) VALUES ${values.join(', ')}`;
-      await pgPool.query(sql, params);
-      inserted += batch.length;
+      const sql = `INSERT INTO ede_exports (${columns.join(', ')}) VALUES ${values.join(', ')} ON CONFLICT (declaration_id, data_type) DO NOTHING`;
+      const result = await pgPool.query(sql, params);
+      const actualInserted = result.rowCount || 0;
+      inserted += actualInserted;
+      skipped += batch.length - actualInserted;
     } catch (batchErr) {
       // If batch fails, try inserting rows individually to identify problematic rows
       console.error(`[BG] Batch insert error at rows ${i}-${i + batch.length}:`, batchErr.message);
       for (const rowData of batch) {
         try {
-          await run(`
+          const singleResult = await run(`
             INSERT INTO exports (
               declaration_id, exporter_name, consignee_name, product_description,
               product_category, data_type, hs_code, quantity, unit, fob_value,
               fob_currency, port_of_loading, port_of_discharge, country_of_destination,
               shipment_date, month_year, upload_batch
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (declaration_id, data_type) DO NOTHING
           `, rowData);
-          inserted++;
+          if (singleResult.changes > 0) inserted++;
+          else skipped++;
         } catch (singleErr) {
           if (skipped < 5) {
             console.error(`[BG] Row insert error: ${singleErr.message}`);

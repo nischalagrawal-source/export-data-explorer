@@ -59,7 +59,8 @@ async function initDb() {
         shipment_date DATE,
         month_year TEXT,
         upload_batch TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (declaration_id, data_type)
       )
     `);
 
