@@ -481,16 +481,19 @@ const DataManagement = () => {
               </thead>
               <tbody>
                 {uploadLog.map((log, i) => (
-                  <tr key={i} className="border-b border-white/5 hover:bg-white/5">
-                    <td className="p-3 text-white">{log.filename}</td>
+                  <tr key={i} className={`border-b border-white/5 hover:bg-white/5 ${log.data_deleted ? 'opacity-50' : ''}`}>
+                    <td className={`p-3 ${log.data_deleted ? 'line-through text-slate-500' : 'text-white'}`}>{log.filename}</td>
                     <td className="p-3">
-                      <span className={`text-xs px-2 py-0.5 rounded ${log.data_type === 'fruits' ? 'bg-amber-500/20 text-amber-400' : 'bg-emerald-500/20 text-emerald-400'}`}>
+                      <span className={`text-xs px-2 py-0.5 rounded ${log.data_deleted ? 'bg-rose-500/20 text-rose-400 line-through' : log.data_type === 'fruits' ? 'bg-amber-500/20 text-amber-400' : 'bg-emerald-500/20 text-emerald-400'}`}>
                         {log.data_type}
                       </span>
                     </td>
-                    <td className="p-3 text-slate-300">{parseInt(log.row_count || 0).toLocaleString()}</td>
-                    <td className="p-3 text-slate-300">{log.uploaded_by}</td>
-                    <td className="p-3 text-slate-400">{new Date(log.uploaded_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</td>
+                    <td className={`p-3 ${log.data_deleted ? 'line-through text-slate-500' : 'text-slate-300'}`}>{parseInt(log.row_count || 0).toLocaleString()}</td>
+                    <td className={`p-3 ${log.data_deleted ? 'text-slate-500' : 'text-slate-300'}`}>{log.uploaded_by}</td>
+                    <td className="p-3 text-slate-400">
+                      {new Date(log.uploaded_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                      {log.data_deleted && <span className="ml-2 text-xs text-rose-400">(data deleted)</span>}
+                    </td>
                   </tr>
                 ))}
               </tbody>

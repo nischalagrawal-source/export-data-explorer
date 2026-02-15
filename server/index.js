@@ -439,6 +439,9 @@ async function initDb() {
       `);
       await pgPool.query('CREATE INDEX IF NOT EXISTS idx_upload_log_hash ON ede_upload_log(file_hash)');
       await pgPool.query('CREATE INDEX IF NOT EXISTS idx_upload_log_filename ON ede_upload_log(filename)');
+      // Add data_deleted column if not exists
+      await pgPool.query("ALTER TABLE ede_upload_log ADD COLUMN IF NOT EXISTS data_deleted BOOLEAN DEFAULT false");
+      await pgPool.query("ALTER TABLE ede_upload_log ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP");
     } catch (e) {
       console.error('Upload log table creation error:', e.message);
     }
@@ -1374,7 +1377,8 @@ app.get('/api/data-management/summary', requireAdmin, async (req, res) => {
 
     // Also get upload log
     const logs = await pgPool.query(`
-      SELECT filename, data_type, row_count, uploaded_by, uploaded_at
+      SELECT filename, data_type, row_count, uploaded_by, uploaded_at, 
+             COALESCE(data_deleted, false) as data_deleted, deleted_at
       FROM ede_upload_log
       ORDER BY uploaded_at DESC
       LIMIT 50
@@ -1401,6 +1405,11 @@ app.delete('/api/data-management/:monthYear/:dataType', requireAdmin, async (req
       'DELETE FROM ede_exports WHERE month_year = $1 AND data_type = $2',
       [monthYear, dataType]
     );
+    // Mark corresponding upload log entries as deleted
+    await pgPool.query(
+      "UPDATE ede_upload_log SET data_deleted = true, deleted_at = NOW() WHERE data_type = $1 AND NOT data_deleted",
+      [dataType]
+    );
     console.log(`[Admin] Deleted ${result.rowCount} rows for ${dataType} ${monthYear} by ${req.user.username}`);
     res.json({ success: true, deleted: result.rowCount, monthYear, dataType });
   } catch (err) {
@@ -1416,6 +1425,10 @@ app.delete('/api/data-management/:monthYear', requireAdmin, async (req, res) => 
     const result = await pgPool.query(
       'DELETE FROM ede_exports WHERE month_year = $1',
       [monthYear]
+    );
+    // Mark corresponding upload log entries as deleted
+    await pgPool.query(
+      "UPDATE ede_upload_log SET data_deleted = true, deleted_at = NOW() WHERE NOT data_deleted"
     );
     console.log(`[Admin] Deleted ${result.rowCount} rows for all data in ${monthYear} by ${req.user.username}`);
     res.json({ success: true, deleted: result.rowCount, monthYear });
