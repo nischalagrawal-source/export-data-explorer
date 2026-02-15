@@ -1354,7 +1354,7 @@ async function processUploadInBackground(data, dataType, uploadBatch, jobId, exc
 // ============= DATA MANAGEMENT ROUTES (Admin only) =============
 
 // Get month-wise data summary
-app.get('/api/data-management/summary', authenticateToken, requireAdmin, async (req, res) => {
+app.get('/api/data-management/summary', requireAdmin, async (req, res) => {
   try {
     const pgPool = getPool();
     const result = await pgPool.query(`
@@ -1390,7 +1390,7 @@ app.get('/api/data-management/summary', authenticateToken, requireAdmin, async (
 });
 
 // Delete data for a specific month and data type
-app.delete('/api/data-management/:monthYear/:dataType', authenticateToken, requireAdmin, async (req, res) => {
+app.delete('/api/data-management/:monthYear/:dataType', requireAdmin, async (req, res) => {
   try {
     const { monthYear, dataType } = req.params;
     if (!monthYear || !['fruits', 'vegetables'].includes(dataType)) {
@@ -1409,7 +1409,7 @@ app.delete('/api/data-management/:monthYear/:dataType', authenticateToken, requi
 });
 
 // Delete ALL data for a specific month (both fruits and vegetables)
-app.delete('/api/data-management/:monthYear', authenticateToken, requireAdmin, async (req, res) => {
+app.delete('/api/data-management/:monthYear', requireAdmin, async (req, res) => {
   try {
     const { monthYear } = req.params;
     const pgPool = getPool();

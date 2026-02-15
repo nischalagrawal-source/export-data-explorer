@@ -328,9 +328,9 @@ const DataManagement = () => {
   const [loading, setLoading] = useState(true);
   const [deleting, setDeleting] = useState(null);
 
-  const fetchSummary = async () => {
+  const fetchSummary = async (silent) => {
     try {
-      setLoading(true);
+      if (!silent) setLoading(true);
       const res = await api.get('/data-management/summary');
       setSummary(res.data.data || []);
       setUploadLog(res.data.uploadLog || []);
@@ -341,7 +341,12 @@ const DataManagement = () => {
     }
   };
 
-  useEffect(() => { fetchSummary(); }, []);
+  useEffect(() => {
+    fetchSummary();
+    // Auto-refresh every 15 seconds to catch newly processed data
+    const interval = setInterval(() => fetchSummary(true), 15000);
+    return () => clearInterval(interval);
+  }, []);
 
   const handleDelete = async (monthYear, dataType) => {
     const label = `${dataType} data for ${monthYear}`;
