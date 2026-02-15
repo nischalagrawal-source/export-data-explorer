@@ -1266,10 +1266,21 @@ function AuthenticatedApp({ currentUser, onLogout }) {
       const { warnings } = valRes.data;
 
       if (warnings && warnings.length > 0) {
+        // HS code mismatch = hard block, no option to proceed
+        const hasMismatch = warnings.some(w => w.type === 'hs_mismatch');
+        if (hasMismatch) {
+          const mismatchMsg = warnings.find(w => w.type === 'hs_mismatch').message;
+          setLoading(false);
+          setUploadStatus({ success: false, message: `Upload blocked: ${mismatchMsg}` });
+          e.target.value = '';
+          alert(`🚨 CATEGORY MISMATCH\n\n${mismatchMsg}\n\nPlease select the correct category and try again.`);
+          return;
+        }
+
+        // Other warnings (duplicate, same name) = ask to proceed
         const warningMessages = warnings.map(w => {
           if (w.type === 'duplicate') return `⚠️ DUPLICATE FILE: ${w.message}`;
           if (w.type === 'same_name') return `⚠️ SAME FILENAME: ${w.message}`;
-          if (w.type === 'hs_mismatch') return `🚨 CATEGORY MISMATCH: ${w.message}`;
           return w.message;
         }).join('\n\n');
 
