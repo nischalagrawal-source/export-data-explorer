@@ -1,0 +1,106 @@
+name: Deploy to Render
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Trigger Render Deploy
+        id: render_deploy
+        run: |
+          echo "🚀 Triggering Render deploy..."
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" "${{ secrets.RENDER_DEPLOY_HOOK_URL }}")
+          echo "render_status=$RESPONSE" >> $GITHUB_OUTPUT
+          echo "Render responded with HTTP $RESPONSE"
+          
+          if [ "$RESPONSE" -ge 200 ] && [ "$RESPONSE" -lt 400 ]; then
+            echo "✅ Deploy triggered successfully!"
+          else
+            echo "❌ Warning: Unexpected response code $RESPONSE"
+            exit 1
+          fi
+
+      - name: Wait for deployment
+        run: sleep 60
+
+      - name: Verify deployment health
+        id: health_check
+        continue-on-error: true
+        run: |
+          SERVICE_URL="https://ede.agrovilla.in"
+          HEALTH_PATH="/api/health"
+          
+          echo "Checking health at: $SERVICE_URL$HEALTH_PATH"
+          
+          for i in {1..5}; do
+            echo "Health check attempt $i/5..."
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$SERVICE_URL$HEALTH_PATH")
+            
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "✅ Service responded with 200"
+              echo "health_status=healthy" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "⚠️ Could not verify health (got HTTP $HTTP_CODE)"
+          echo "health_status=unknown" >> $GITHUB_OUTPUT
+
+      - name: Send deployment notification
+        if: always()
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          payload: |
+            {
+              "text": "🎯 Agrovilla Deployment Report",
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "🚀 Deployment Status"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Module:*\n${{ github.event.repository.name }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Status:*\n${{ steps.render_deploy.outcome }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Health:*\n${{ steps.health_check.outputs.health_status || 'pending' }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Author:*\n${{ github.actor }}"
+                    }
+                  ]
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Commit:* `${{ github.event.head_commit.message }}`\n*URL:* https://ede.agrovilla.in\n*Logs:* ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
